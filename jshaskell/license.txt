@@ -1,0 +1,11 @@
+/** @license
+ * JSHaskell - Some Haskell language features for JavaScript
+ * 
+ * http://code.google.com/p/jshaskell/
+ * 
+ * Copyright (c) 2010 Balazs Endresz (balazs.endresz@gmail.com)
+ * Dual licensed under the MIT and GPL licenses.
+ * 
+ * ------------------------------------------------------------
+ *
+ */
