@@ -137,7 +137,7 @@ function resolve(args, rec){
     
     //inject recursive calls
     if(rec)
-        args = map(function(e){return e instanceof Recurse ? rec : e}, args);
+        args = imap(function(e){return e instanceof Recurse ? rec : e}, args);
     
     //execute functions between operators
     var fna = [], fn, newfna = [], i = 0, l = args.length;

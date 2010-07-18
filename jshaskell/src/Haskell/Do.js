@@ -62,5 +62,6 @@ function createDo(inst){
 
 
 namespace("Haskell_Do", {
-    createDo: createDo
+    createDo: createDo,
+    Scope   : Scope
 })

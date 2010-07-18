@@ -219,7 +219,7 @@ data Type a = Constr1 Number a
 
 //#endregion
 
-namespace("Haskell_ADT", {
+namespace("Haskell_DataType", {
     data      : data,
     ADT       : ADT,
     record    : record,

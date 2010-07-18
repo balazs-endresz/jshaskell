@@ -1,4 +1,4 @@
-/// <reference path="../../../../jshaskell/src/Haskell/ADT.js" local />
+/// <reference path="../../../../jshaskell/src/Haskell/DataType.js" local />
 /// <reference path="../../../../jsparsec/src/Text/Parsec.js" local />
 
 
