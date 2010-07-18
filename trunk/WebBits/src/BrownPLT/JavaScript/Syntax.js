@@ -1,5 +1,5 @@
-/// <reference path="../../../../jshaskell/src/Haskell/ADT.js" local />
-/// <reference path="../../../../jshaskell/src/Haskell/DataTypes.js" local />
+/// <reference path="../../../../jshaskell/src/Haskell/DataType.js" local />
+/// <reference path="../../../../base/src/Prelude.js" local />
 
 
 //-- |JavaScript's syntax.

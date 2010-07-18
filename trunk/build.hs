@@ -6,8 +6,8 @@ import Data.Ord
 import Data.Function
 import qualified Data.List.Split as Split
 import Control.Monad
-import Prelude hiding (readFile, writeFile, putStrLn)
-import System.IO hiding (readFile, writeFile, putStrLn, hGetLine, hGetContents)
+import Prelude hiding (readFile, writeFile, putStrLn, print)
+import System.IO hiding (readFile, writeFile, putStrLn, hGetLine, hGetContents, print)
 import System.IO.UTF8
 import System.Directory
 import System.FilePath ((</>))
@@ -19,6 +19,7 @@ import Control.Exception
 --this can be modified to create shortcuts to some files
 --the file MUST be in the <package name>/src/ folder!
 packageToModule = [("jshaskell", "jshaskell/src/Haskell.js")
+                  ,("prelude"  , "base/src/Prelude.js")
                   ,("jsparsec" , "jsparsec/src/Text/Parsec.js")
                   ,("webbits"  , "WebBits/src/BrownPLT/JavaScript.js")
                   ,("example"  , "example/src/parsejs.js")
@@ -195,12 +196,13 @@ getRefs path = do
         iseof <- hIsEOF inh
         if iseof
             then return acc
-            else do line <- hGetLine inh
-                    readRefs inh $ if isRef line
-                        then parseRef line : acc
-                        else acc
+            else do line' <- hGetLine inh
+                    let line = replace "\65279" "" line'
+                    if isRef line
+                        then readRefs inh $ parseRef line : acc
+                        else return acc
 
-    isRef line = "///<referencepath" `isPrefixOf` filter (/= ' ') line 
+    isRef line = "///<referencepath" `isPrefixOf` filter (/= ' ') line
 
     parseRef line = Ref { modulePath = path
                         , refPath = getAbsPath path $ takeWhile (/= '"') $ tail $ dropWhile (/= '"') line

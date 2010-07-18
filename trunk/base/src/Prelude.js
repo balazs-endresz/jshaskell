@@ -1,10 +1,11 @@
-/// <reference path="ADT.js" />
-/// <reference path="Do.js" />
-/// <reference path="Typeclass.js" />
+﻿/// <reference path="../../jshaskell/src/Haskell.js" local />
 
-// -------------------------------------------------
-// Basic data types
-// -------------------------------------------------
+
+// This module currently contains only some random generic functions and type classes,
+// later on some of these will be moved to separate modules.
+// Also, for now, most of the list functions doesn't work with strings in _some_ browsers.
+
+
 
 // tuples are not defined with `data`, they are just simple classes
 var Tuple = {};
@@ -477,18 +478,331 @@ instance(Show, Object, {
 
 
 
-namespace("Haskell_DataTypes", {
-     Unit      : Unit
-    ,Tuple     : Tuple
-    ,Maybe     : Maybe
-    ,Ordering  : Ordering
-    ,Either    : Either
-    ,Eq        : Eq
-    ,Ord       : Ord
-    ,Functor   : Functor
-    ,Monad     : Monad
-    ,Scope     : Scope
-    ,Show      : Show
+function uncons(a){
+    var isArray = stringAsArray || !(typeof arr == "string"),
+        head = isArray ? a[0] : a.charAt(0),
+        tail = slice(a, 1),
+        res = [head, tail];
+    
+    res.head = head;
+    res.tail = tail;
+    res.constructor = Tuple.Tuple2;
+    return res;
+}
+
+
+
+
+function elemIndex(value, arr) {
+    var length = arr.length;   
+    if(!length)
+        return Maybe.Nothing;
+    
+    var iEq = getInstance(Eq, typeOf(arr[0]));
+    
+    for(var i = 0; i < length; ++i)  
+      if(iEq.eq(arr[i], value))  
+        return  Maybe.Just(i);  
+    
+    return Maybe.Nothing;
+}
+    
+
+//lookup :: (Eq a) => a -> [(a,b)] -> Maybe b
+function lookup(key, arr){
+    var length = arr.length;   
+    if (!length)
+        return Maybe.Nothing;
+    
+    for (var i = 0; i < length; ++i)  
+      if (arr[i][0] === key)
+        return Maybe.Just(arr[i][1]);  
+   
+    return Maybe.Nothing;
+}
+
+
+function sort(arr){
+    function sortFn(a, b){
+        var res = Ord.compare(a, b);
+        return  res.LT ? -1 :
+                res.GT ?  1 :
+                res.EQ ?  0 :
+                error(sort);
+    }
+    if(arr.sort)
+        return arr.sort(sortFn);
+    return slice(arr).sort(sortFn).join("");
+}
+
+
+
+
+
+//-- | The 'nub' function removes duplicate elements from a list.
+//-- In particular, it keeps only the first occurrence of each element.
+//-- (The name 'nub' means \`essence\'.)
+//-- It is a special case of 'nubBy', which allows the programmer to supply
+//-- their own equality test.
+//nub                     :: (Eq a) => [a] -> [a]
+//#ifdef USE_REPORT_PRELUDE
+//nub                     =  nubBy (==)
+//#else
+//-- stolen from HBC
+//nub l                   = nub' l []             -- '
+//  where
+//    nub' [] _           = []                    -- '
+//    nub' (x:xs) ls                              -- '
+//        | x `elem` ls   = nub' xs ls            -- '
+//        | otherwise     = x : nub' xs (x:ls)    -- '
+//#endif
+function nub(arr){
+    function nub_(arr, ls){        
+        var isArray = arr.constructor == Array;
+            x  = isArray ? arr[0] : arr.charAt(0),
+            xs = isArray ? arr.slice(1) : arr.substr(1);
+        
+        return !arr.length ? [] :
+                elem(x, ls) ? nub_(xs, ls) : 
+                cons(x, nub_(xs, cons(x,ls)) );
+    }
+    return nub_(arr, []);
+}
+
+//-- | The 'maybe' function takes a default value, a function, and a 'Maybe'
+//-- value.  If the 'Maybe' value is 'Nothing', the function returns the
+//-- default value.  Otherwise, it applies the function to the value inside
+//-- the 'Just' and returns the result.
+//maybe :: b -> (a -> b) -> Maybe a -> b
+//maybe n _ Nothing  = n
+//maybe _ f (Just x) = f x
+
+function maybe(n, f, m){
+    if(m.Nothing)
+        return n;
+    if(m.Just)
+        return f(m[0]);
+}
+
+//  compare x y = if x == y then EQ
+//                  -- NB: must be '<=' not '<' to validate the
+//                  -- above claim about the minimal things that
+//                  -- can be defined for an instance of Ord:
+//                  else if x <= y then LT
+//                  else GT
+
+function compare(x, y){
+    return x === y ? Ordering.EQ : 
+           x <=  y ? Ordering.LT :
+                     Ordering.GT;
+}
+
+//-- | 'span', applied to a predicate @p@ and a list @xs@, returns a tuple where
+//-- first element is longest prefix (possibly empty) of @xs@ of elements that
+//-- satisfy @p@ and second element is the remainder of the list:
+//-- 
+//-- > span (< 3) [1,2,3,4,1,2,3,4] == ([1,2],[3,4,1,2,3,4])
+//-- > span (< 9) [1,2,3] == ([1,2,3],[])
+//-- > span (< 0) [1,2,3] == ([],[1,2,3])
+//-- 
+//-- 'span' @p xs@ is equivalent to @('takeWhile' p xs, 'dropWhile' p xs)@
+//
+//span                    :: (a -> Bool) -> [a] -> ([a],[a])
+//span _ xs@[]            =  (xs, xs)
+//span p xs@(x:xs')
+//         | p x          =  let (ys,zs) = span p xs' in (x:ys,zs)
+//         | otherwise    =  ([],xs)
+function span(p, xs){
+    var ret;
+    if(!xs.length){
+        ret = [xs, xs];
+    }else{
+        if(p(xs[0])){
+            var tmp = span(p, slice(xs, 1))
+            ret = [cons(xs[0], tmp[0]), tmp[1]]
+        }else
+            ret = [[], xs];
+    }
+    ret.constructor = Tuple.Tuple2;
+    return ret;
+}
+
+
+function fst(tuple){
+    return tuple[0];
+}
+
+function snd(tuple){
+    return tuple[1];
+}
+
+
+//-- | 'uncurry' converts a curried function to a function on pairs.
+//uncurry                 :: (a -> b -> c) -> ((a, b) -> c)
+//uncurry f p             =  f (fst p) (snd p)
+function uncurry(f){
+    return function(p){
+        return f(p[0], p[1]);
+    }
+}
+
+
+//-- | @'until' p f@ yields the result of applying @f@ until @p@ holds.
+//until                   :: (a -> Bool) -> (a -> a) -> a -> a
+//until p f x | p x       =  x
+//            | otherwise =  until p f (f x)
+function until(p, f, x) {
+    return p(x) ? x : until(p, f, f(x));
+}
+
+
+function fix_(f) {
+    return function () { return rhs(fix_(f)) }
+}
+/*
+//since it's not lazy this `fix` function doesn't terminate:
+function fix_original(f){ return rhs(fix_original(f)) }
+
+//so we have to use an expanded version:
+function fix_(f){ 
+return function(){ return rhs(fix_(f)) }
+}
+
+//and call it first to acces the actual one:
+function fact_rhs(getRec){
+return function(n){
+return n == 1 ? 1 : (n * getRec()(n-1))
+}
+}
+//where
+//getRec   == fix_ (f)
+//getRec() == fix_ (f) ()
+//getRec() == fix_original (f)
+
+//an extra call is need here too:
+var fact = fix_(fact_rhs)();
+
+fact(4);
+*/
+
+//the Y-combmiator
+function fix(f) {
+    return (function (g) { return g(g) })
+            (function (h) {
+                return function () { return f(h(h)).apply(null, arguments) }
+            });
+}
+/*
+function fact_rhs(rec){
+return function(n){
+return n == 1 ? 1 : (n * rec(n-1))
+}
+}
+
+var fact = fix(fact_rhs);
+
+fact(4);
+
+*/
+
+
+function isSpace(c){
+    return /^\s$/.test(c);
+}
+function isUpper(c){
+    return c.toUpperCase() == c;
+}
+function isLower(c){
+    return c.toLowerCase() == c;
+}
+function isAlphaNum(c){
+    return /^\w$/.test(c);
+}
+function isAlpha(c){
+    return /^\w$/.test(c) && /^\D$/.test(c);
+}
+function isDigit(c){
+    return /^\d$/.test(c);
+}
+function isHexDigit(c){
+    return /^[0-9A-Fa-f]$/.test(c);
+}
+function isOctDigit(c){
+    return /^[0-7]$/.test(c);
+}
+
+
+
+function foldl(f, initial, arr) {
+    for(var i = 0, l = arr.length; i < l; ++i) 
+        initial = f(initial, arr[i]);
+    return initial;
+}
+
+function foldr(f, initial, arr) {
+    for(var l = arr.length - 1; l > -1 ; --l) 
+        initial = f(arr[l], initial);
+    return initial;
+}
+
+//-- | 'zip' takes two lists and returns a list of corresponding pairs.
+//-- If one input list is short, excess elements of the longer list are
+//-- discarded.
+//zip :: [a] -> [b] -> [(a,b)]
+//zip (a:as) (b:bs) = (a,b) : zip as bs
+//zip _      _      = []
+function zip(arr1, arr2){
+    var res = [], i = 0, l = Math.min(arr1.length, arr2.length);
+    for (; i < l; ++i)
+        res[i] = [arr1[i], arr2[i]];
+    return res;
+}
+
+function replicate(n, x){
+    for (var ret = [], i = 0; i < n; ++i)
+        ret[i] = x;
+    return ret;
+}
+
+namespace("Prelude", {
+     Unit       : Unit
+    ,Tuple      : Tuple
+    ,Maybe      : Maybe
+    ,Ordering   : Ordering
+    ,Either     : Either
+    ,Eq         : Eq
+    ,Ord        : Ord
+    ,Functor    : Functor
+    ,Monad      : Monad
+    ,Show       : Show
+
+    ,foldl      : foldl
+    ,foldr      : foldr
+    ,zip        : zip
+    ,replicate  : replicate
+    ,sort       : sort
+    ,nub        : nub
+    ,maybe      : maybe
+    ,lookup     : lookup
+    ,span       : span
+    ,elemIndex  : elemIndex
+    ,uncons     : uncons
+    ,compare    : compare
+    ,fst        : fst
+    ,snd        : snd
+    ,uncurry    : uncurry
+    ,until      : until
+    ,fix        : fix
+    ,fix_       : fix_
+    ,isSpace    : isSpace
+    ,isUpper    : isUpper
+    ,isLower    : isLower
+    ,isAlpha    : isAlpha
+    ,isAlphaNum : isAlphaNum
+    ,isDigit    : isDigit
+    ,isHexDigit : isHexDigit
+    ,isOctDigit : isOctDigit
+
 })
 //TODO:
 //infix  4  ==, /=, <, <=, >=, >

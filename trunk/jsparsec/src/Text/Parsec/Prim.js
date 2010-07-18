@@ -1,4 +1,5 @@
 /// <reference path="../../../../jshaskell/src/Haskell.js" local />
+/// <reference path="../../../../base/src/Prelude.js" local />
 
 // -------------------------------------------------
 // ParseState
@@ -67,7 +68,6 @@ ParseState.prototype = {
         if(!result)
             return;
 
-        //result.remaining === this
         this.index  = result.index;
         this.length = result.length;
 
@@ -78,7 +78,6 @@ ParseState.prototype = {
         if(!this.memoize)
             return false;
         
-        //cached.remaining === this
         cached.index  = this.index;
         cached.length = this.length;
 
@@ -125,8 +124,6 @@ function ps(str) {
 // -------------------------------------------------
 
 
-// remaining: is the remaining string(ParseState) to be parsed
-// matched:   is the portion of the string that was successfully matched by the parser
 // ast:       is the AST returned by the parse, which doesn't need to be successful
 //                this is the value that Functor, Applicative, and Monad functions operate on
 // success:   might be true or false
@@ -136,39 +133,23 @@ function ps(str) {
 //                else the latter form should be used (this might be changed later!).
 //                It might be an array of these values, which represents a choice.
 
-
-function make_result(ast, success, expecting){
-    return  {ast: ast
-            ,success: success === undef ? true : success
-            ,expecting: expecting
-            };
-}
-
-var _EmptyOk = make_result(undef);
-
-
-function _fail(expecting){
-    return make_result(undef, false, expecting);
-}
-
-
 function unexpected(name){
     return function(scope, state, k){
-        return k(make_result(null, false, {unexpected: name}));
+        return k({ast: null, success: false, expecting: {unexpected: name}});
     };
 }
 
 //accepts an identifier string, see usage with notFollowedBy
 function unexpectedIdent(name){
     return function(scope, state, k){
-        return k(make_result(null, false, {unexpected: scope[name]}));
+        return k({ast: null, success: false, expecting: {unexpected: scope[name]}});
     };
 }
 
 
 function parserFail(msg){
     return function(scope, state, k){
-        return k(make_result(undef, false, msg));
+        return k({success: false, expecting: msg});
     };
 };
 
@@ -176,7 +157,7 @@ var fail = parserFail;
 
 
 function parserZero(scope, state, k){
-    return k(make_result(undef, false));
+    return k({success: false});
 }
 
 var mzero = parserZero;
@@ -196,32 +177,9 @@ function toParser(p){
 }
 
 
-function trampoline(x){
-    while(x && x.func)
-        x = x.func.apply(null, x.args || []);
-}
-
-
-function trampolineAsync(x, count){ //TODO: use while
-    count = count || 0 ;
-    count++;
-    
-    if(!(x && x.func)){
-        count = 0;
-        return;
-    }
-
-    x = x.func.apply(null, x.args || []);
-    
-    if(count % 500 == 0 )
-        setTimeout(function(){ trampolineAsync(x, count) }, 1);
-    else
-        trampolineAsync(x, count);
-}
-
 function run(p, strOrState, complete, error, async){
     var input = strOrState instanceof ParseState ? strOrState : ps(strOrState);
-    (async ? trampolineAsync : trampoline) ({func:p, args:[new Scope(), input, function(result){
+    evalThunks(function(){ return p(new Scope(), input, function(result){
         result.state = input;
         delete result.index;
         delete result.length;
@@ -233,7 +191,7 @@ function run(p, strOrState, complete, error, async){
             delete result.expecting;
         }
         complete(result);
-    }]});
+    })}, async);
 }
 
 function processError(e, s, i, unexp){
@@ -264,22 +222,22 @@ function Parser(){}
 
 function parserBind(p, f){ 
     return function(scope, state, k){
-        return {func:p, args:[scope, state, function(result){
+        return function(){ return p(scope, state, function(result){
             if(result.success){
-                return {func:f(result.ast), args:[scope, state, k]}
+                return function(){ return f(result.ast)(scope, state, k) }
             }else{
                 return k(result);
             }
-        }]};
+        })};
     };
 }
 
 
 var do2 = function(p1, p2){
     function fn(scope, state, k){
-        return { func: p1, args: [scope, state, function(result){
+        return function(){ return p1(scope, state, function(result){
             return result.success ? p2(scope, state, k) : k(result); //TODO: p2
-        }]};
+        })};
     }
     fn.constructor = Parser;
     return fn;
@@ -308,13 +266,11 @@ function bind(name, p){
     if(name == "scope")
         throw "Can't use 'scope' as an identifier!";
     return function(scope, state, k){
-        return { func: p, args: [scope, state, function(result){
+        return function(){ return p(scope, state, function(result){
             if(result.success)
                 scope[name] = result.ast;
-            result = extend({}, result);
-            
             return k(result);
-        }]};
+        })};
     };
 }
 
@@ -326,7 +282,7 @@ function ret(name, more){
 
     return function(scope, state, k){
 
-        return { func: function(){
+        return function(){ return function(){
             var ast, type = typeof name;
             //if(args){
             //  ast =  resolve(resolveBindings(args, scope));
@@ -338,7 +294,7 @@ function ret(name, more){
             }else
                 ast = name(scope);
 
-            return k(make_result(ast));
+            return k({ast: ast, success: true});
 
         }};
     };
@@ -360,7 +316,7 @@ function withBound(fn){
 var returnCall = compose(ret, withBound);
 
 function getPosition(scope, state, k){
-    return k(make_result(state.index));
+    return k({ast: state.index, success: true});
 }
 
 var getParserState = getPosition; //TODO?
@@ -369,7 +325,7 @@ function setPosition(id){
     var type = typeof id;
     return function(scope, state, k){
         state.scrollTo(type == "string" ? scope[id] : id);
-        return k(_EmptyOk);
+        return k({success: true});
     };
 }
 
@@ -380,7 +336,7 @@ var setParserState = setPosition; //TODO?
 //this function does what `pure` and `return` do in Haskell
 function parserReturn(value){
     return function(scope, state, k){
-        return k(make_result(value));
+        return k({ast: value, success: true});
     };
 }
 
@@ -426,33 +382,30 @@ function skip_snd(p1, p2){ return do_(bind("a", p1), p2, ret("a")) }
 
 function parserPlus(p1, p2){
     function fn(scope, state, k){
-        return {func: p1, args:[scope, state, function(result){
+        return function(){ return p1(scope, state, function(result){
             var errors =  [];
 
             function handleError(result){
                 var err = result.expecting;
                 if(err){
-                    if(isArray(err))
+                    if(err.constructor == Array)
                         errors = errors.concat(err);
                     else
                         errors.push(err);
                 }
-                if(!result.success)
-                    result.expecting = errors;
-                else
-                    delete result.expecting;
+                result.expecting = result.success ? undef : errors;
             }
             
             handleError(result);
             if(result.ast !== undef)
-                return {func:k, args: [result]};
+                return function(){ return k(result) };
             else
-                return {func: p2, args: [scope, state, function(result){
+                return function(){ return p2(scope, state, function(result){
                     handleError(result);
                     return k(result);
-                }]};
+                })};
             
-        }]};
+        })};
     }
     fn.constructor = Parser;
     return fn;
@@ -492,24 +445,21 @@ function tokens(parsers){
         
         function next(parser){
             return function(scope, state, k){
-                return {func:parser, args:[scope, state, function(result){
+                return function(){ return parser(scope, state, function(result){
                     i++;
                     if(!result.success)
                         return k(result);
                     if(result.ast !== undef)
                         ast.push(result.ast);
                     return i < length ? next(parsers[i])(scope, state, k) : k(result);
-                }]};
+                })};
             };
         }
 
-        return {func:next(parsers[i]), args:[scope, state, function(_result){
-            var result = extend({}, _result);
-            result.ast = ast;
-            if(result.success)
-                delete result.expecting;
-            return k(result);
-        }]};
+        return function(){ return next(parsers[i])(scope, state, function(result){
+            var success = result.success;
+            return k({ast: ast, success: success, expecting: success ? undef : result.expecting });
+        })};
     };
 }
 
@@ -521,7 +471,7 @@ function _many(onePlusMatch){
             
             function next(parser){
                 return function(scope, state, k){
-                    return {func:parser, args:[scope, state, function(result){
+                    return function(){ return parser(scope, state, function(result){
                         if(!result.success)
                             return k(result);
                             
@@ -530,20 +480,17 @@ function _many(onePlusMatch){
                             ast.push(result.ast);
                                 
                         return next(parser)(scope, state, k);
-                    }]};
+                    })};
                 };
             }
     
-            return {func:next(parser), args:[scope, state, function(_result){
-                var result = extend({}, _result);
-                result.success = !onePlusMatch || (matchedOne && onePlusMatch);
-                result.ast = ast;
-                if(result.success)
-                    delete result.expecting;
-                else
-                    result.ast = undef;
-                return k(result);
-            }]};
+            return function(){ return next(parser)(scope, state, function(result){
+                var success = !onePlusMatch || (matchedOne && onePlusMatch);
+                return k({ast: success ? ast : undef
+                         ,success: success
+                         ,expecting: success ? undef : result.expecting
+                         });
+            })};
         };
     };
 }
@@ -583,13 +530,13 @@ function tokenPrimP1(fn){
             if(result !== undef)
                 return k(result);
                 
-            return {func:p1, args:[scope, state, function(result){
-                
+            return function(){ return p1(scope, state, function(result){
+                    
                     result = fn(arg2, result, state, startIndex);
                     
                     state.putCached(pid, startIndex, result);
                     return k(result);
-                }]};
+                })};
             
         };
         combinator.constructor = Parser;
@@ -599,20 +546,16 @@ function tokenPrimP1(fn){
 
 
 var try_ = tokenPrimP1(function(_, result, state, startIndex){
-    result = extend({}, result);
     if(result.success)
         return result;
     state.scrollTo(startIndex);
-    result.ast = undef;
-    return result;
+    return {ast: undef, success: false, expecting: result.expecting };
 });
 
 
 var skipMany = function(p){
     return tokenPrimP1(function(_, result, state, startIndex){
-        result = extend({}, result);
-        result.ast = undef;
-        return result;
+        return {ast: undef, success: result.success, expecting: result.expecting };
     })(many(p), null);
 };
 
@@ -620,9 +563,9 @@ var skipMany = function(p){
 var char_ = tokenPrim(function(c, state, startIndex){
     if(state.length > 0 && state.at(0) == c){
         state.scroll(1);
-        return make_result(c);
+        return {ast: c, success: true};
     }
-    return _fail(c);
+    return {success: false, expecting: c};
 });
 
 
@@ -631,9 +574,9 @@ var satisfy = tokenPrim(function(cond, state){
     var fstchar = state.at(0);
     if(state.length > 0 && cond(fstchar)){
         state.scroll(1);
-        return make_result(fstchar);
+        return {ast: fstchar, success: true};
     }
-    return _fail(fstchar);
+    return {success: false, expecting: fstchar};
 });
 
 
@@ -641,14 +584,11 @@ var satisfy = tokenPrim(function(cond, state){
 //string :: String -> Parser
 var string = function(s){ //TODO
     return tokenPrimP1(function(_, result, state, startIndex){
-        result = extend({}, result);
-        result.ast = result.ast.join("");
-        if(!result.success)
-            result.expecting = {at:startIndex, expecting: s};
-        else delete result.expecting;
-        if(!result.ast.length) //TODO
-            result.ast = undef;
-        return result;
+        var ast = result.ast.join("");
+        return {ast: ast.length ? ast : undef //TODO
+               ,success: result.success
+               ,expecting: result.success ? undef : {at:startIndex, expecting: s}
+               };
     })(tokens(map(char_, s)), null);
 };
 
@@ -657,11 +597,8 @@ var string = function(s){ //TODO
 //              -> (Parser -> a -> Parser)
 //label :: Parser -> String -> Parser
 var label = tokenPrimP1(function(str, result, state, startIndex){
-    if(!result.success){
-        result = extend({}, result);
-        result.expecting = {at: startIndex, expecting: str};
-    }
-    return result;  
+    return result.success ? result : 
+        {ast: result.ast, success: false, expecting: {at: startIndex, expecting: str}};
 });
 
 
@@ -670,13 +607,12 @@ var label = tokenPrimP1(function(str, result, state, startIndex){
 
 //match :: StringOrRegex -> Parser
 var match = tokenPrim(function(sr, state){
-        var result;
         if(typeof sr == "string"){
             if(state.substring(0, sr.length) == sr){
                 state.scroll(sr.length);
-                result = make_result(sr);
+                return {ast: sr, success: true};
             }else
-                result = _fail(sr);
+                return {success: false, expecting: sr};
                         
         }else if(sr.exec){
             var rx = new RegExp("^" + sr.source);
@@ -687,11 +623,10 @@ var match = tokenPrim(function(sr, state){
             var matched = substr.substr(0, length);
             if(length){
                 state.scroll(length);
-                result = make_result(matched);
+                return {ast: matched, success: true};
             }else
-                result = _fail(sr.source);
+                return {success: false, expecting: sr.source};
         }
-        return result;
 });
 
 
@@ -813,7 +748,9 @@ instance(Monad, Parser, function(inst){return{
     return_ : parserReturn,
     fail    : parserFail,
     run     : run
-    /* //the default implementation used (which is slightly slower)
+
+    //the default implementation can be used too, which is slightly slower
+    //because `arguments` and `apply` is used instead of directly calling each function
     ,do$  : function (){
 
         function rec(scope, state, k){ return p(scope, state, k) }
@@ -843,7 +780,7 @@ instance(Monad, Parser, function(inst){return{
         line.constructor = Parser;
         return line;
     }
-    */
+    
 }})
 var ParserMonad = getInstance(Monad, Parser);
 var do$ = ParserMonad.do$;
@@ -863,20 +800,17 @@ var ex = exl(Parser);
 //              k m m' = do { x <- m; xs <- m'; return (x:xs) }
 function sequence(ms){
     //TODO!!!!
-    var inst = getInstance(Monad, typeOf(ms[0]));
-    var bindVar = NS.Text_Parsec.bind;
-    var ret = NS.Text_Parsec.ret;
-    var withBound = NS.Text_Parsec.withBound;
+    //var inst = getInstance(Monad, typeOf(ms[0]));
 
     function k(m1, m2){
-        return inst.do_(
-            bindVar("x", m1),
-            bindVar("xs", m2),
+        return do_(
+            bind("x", m1),
+            bind("xs", m2),
             ret(withBound(cons, "x", "xs"))
         );
     }
 
-    return foldr(k, inst.return_([]), ms);
+    return foldr(k, return_([]), ms);
 }
 
 namespace("Text_Parsec_Prim", {

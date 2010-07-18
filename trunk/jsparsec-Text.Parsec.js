@@ -18,6 +18,8 @@
  * 
  */
 
+
+
 /** @license
  * JSHaskell - Some Haskell language features for JavaScript
  * 
@@ -57,8 +59,6 @@ function importSubmodules(ns, imp){
 
 var global = function(){ return this }() || window,
     NS = global["NS"] || (global["NS"] = {}),
-    JSParsec = global.JSParsec = {},
-
     undef,
 
     _toString    = {}.toString,
@@ -317,150 +317,6 @@ var ifilter = _filter ?
 // -------------------------------------------------
 
 
-function uncons(a){
-    var isArray = stringAsArray || !(typeof arr == "string"),
-        head = isArray ? a[0] : a.charAt(0),
-        tail = slice(a, 1),
-        res = [head, tail];
-    
-    res.head = head;
-    res.tail = tail;
-    res.constructor = Tuple.Tuple2;
-    return res;
-}
-
-function drop(n, a){
-    return a.substring ?
-        a.substring(n || 0) :
-        _slice.call(a, n || 0);
-}
-
-function take(n, a){
-    return a.substring ?
-        a.substring(0, n) :
-        _slice.call(a, 0, n);
-}
-
-function foldl(f, initial, arr) {
-    for(var i = 0, l = arr.length; i < l; ++i) 
-        initial = f(initial, arr[i]);
-    return initial;
-}
-
-function foldr(f, initial, arr) {
-    for(var l = arr.length - 1; l > -1 ; --l) 
-        initial = f(arr[l], initial);
-    return initial;
-}
-
-
-function elemIndex(value, arr) {
-    var length = arr.length;   
-    if(!length)
-        return Maybe.Nothing;
-    
-    var iEq = getInstance(Eq, typeOf(arr[0]));
-    
-    for(var i = 0; i < length; ++i)  
-      if(iEq.eq(arr[i], value))  
-        return  Maybe.Just(i);  
-    
-    return Maybe.Nothing;
-}
-    
-
-
-//-- | 'zip' takes two lists and returns a list of corresponding pairs.
-//-- If one input list is short, excess elements of the longer list are
-//-- discarded.
-//zip :: [a] -> [b] -> [(a,b)]
-//zip (a:as) (b:bs) = (a,b) : zip as bs
-//zip _      _      = []
-function zip(arr1, arr2){
-    var res = [], i = 0, l = Math.min(arr1.length, arr2.length);
-    for (; i < l; ++i)
-        res[i] = [arr1[i], arr2[i]];
-    return res;
-}
-
-function sort(arr){
-    function sortFn(a, b){
-        var res = Ord.compare(a, b);
-        return  res.LT ? -1 :
-                res.GT ?  1 :
-                res.EQ ?  0 :
-                error(sort);
-    }
-    if(arr.sort)
-        return arr.sort(sortFn);
-    return slice(arr).sort(sortFn).join("");
-}
-
-
-
-
-
-//-- | The 'nub' function removes duplicate elements from a list.
-//-- In particular, it keeps only the first occurrence of each element.
-//-- (The name 'nub' means \`essence\'.)
-//-- It is a special case of 'nubBy', which allows the programmer to supply
-//-- their own equality test.
-//nub                     :: (Eq a) => [a] -> [a]
-//#ifdef USE_REPORT_PRELUDE
-//nub                     =  nubBy (==)
-//#else
-//-- stolen from HBC
-//nub l                   = nub' l []             -- '
-//  where
-//    nub' [] _           = []                    -- '
-//    nub' (x:xs) ls                              -- '
-//        | x `elem` ls   = nub' xs ls            -- '
-//        | otherwise     = x : nub' xs (x:ls)    -- '
-//#endif
-function nub(arr){
-    function nub_(arr, ls){        
-        var isArray = arr.constructor == Array;
-            x  = isArray ? arr[0] : arr.charAt(0),
-            xs = isArray ? arr.slice(1) : arr.substr(1);
-        
-        return !arr.length ? [] :
-                elem(x, ls) ? nub_(xs, ls) : 
-                cons(x, nub_(xs, cons(x,ls)) );
-    }
-    return nub_(arr, []);
-}
-
-//-- | The 'maybe' function takes a default value, a function, and a 'Maybe'
-//-- value.  If the 'Maybe' value is 'Nothing', the function returns the
-//-- default value.  Otherwise, it applies the function to the value inside
-//-- the 'Just' and returns the result.
-//maybe :: b -> (a -> b) -> Maybe a -> b
-//maybe n _ Nothing  = n
-//maybe _ f (Just x) = f x
-
-function maybe(n, f, m){
-    if(m.Nothing)
-        return n;
-    if(m.Just)
-        return f(m[0]);
-}
-
-//  compare x y = if x == y then EQ
-//                  -- NB: must be '<=' not '<' to validate the
-//                  -- above claim about the minimal things that
-//                  -- can be defined for an instance of Ord:
-//                  else if x <= y then LT
-//                  else GT
-
-function compare(x, y){
-    return x === y ? Ordering.EQ : 
-           x <=  y ? Ordering.LT :
-                     Ordering.GT;
-}
-
-
-
-
 function compose(fst, snd){
     return function(){
         return fst(snd.apply(null, arguments));
@@ -499,13 +355,6 @@ function consJoin(x, xs){
 }
 
 
-function replicate(n, x){
-    for (var ret = [], i = 0; i < n; ++i)
-        ret[i] = x;
-    return ret;
-}
-
-
 
 //returns True if a list is empty, otherwise False
 function null_(a){
@@ -532,134 +381,22 @@ function concat(arr){
     return foldr(function(a, b){ return a.concat(b) }, [], arr);
 }
 
-
-//-- | 'span', applied to a predicate @p@ and a list @xs@, returns a tuple where
-//-- first element is longest prefix (possibly empty) of @xs@ of elements that
-//-- satisfy @p@ and second element is the remainder of the list:
-//-- 
-//-- > span (< 3) [1,2,3,4,1,2,3,4] == ([1,2],[3,4,1,2,3,4])
-//-- > span (< 9) [1,2,3] == ([1,2,3],[])
-//-- > span (< 0) [1,2,3] == ([],[1,2,3])
-//-- 
-//-- 'span' @p xs@ is equivalent to @('takeWhile' p xs, 'dropWhile' p xs)@
-//
-//span                    :: (a -> Bool) -> [a] -> ([a],[a])
-//span _ xs@[]            =  (xs, xs)
-//span p xs@(x:xs')
-//         | p x          =  let (ys,zs) = span p xs' in (x:ys,zs)
-//         | otherwise    =  ([],xs)
-function span(p, xs){
-    var ret;
-    if(!xs.length){
-        ret = [xs, xs];
-    }else{
-        if(p(xs[0])){
-            var tmp = span(p, slice(xs, 1))
-            ret = [cons(xs[0], tmp[0]), tmp[1]]
-        }else
-            ret = [[], xs];
-    }
-    ret.constructor = Tuple.Tuple2;
-    return ret;
+function drop(n, a){
+    return a.substring ?
+        a.substring(n || 0) :
+        _slice.call(a, n || 0);
 }
 
+function take(n, a){
+    return a.substring ?
+        a.substring(0, n) :
+        _slice.call(a, 0, n);
+}
 
 function elem(x, xs){
     return (xs.indexOf ? xs.indexOf(x) : indexOf(x, xs)) != -1; //TODO
 }
 
-function isSpace(c){
-    return /^\s$/.test(c);
-}
-function isUpper(c){
-    return c.toUpperCase() == c;
-}
-function isLower(c){
-    return c.toLowerCase() == c;
-}
-function isAlphaNum(c){
-    return /^\w$/.test(c);
-}
-function isAlpha(c){
-    return /^\w$/.test(c) && /^\D$/.test(c);
-}
-function isDigit(c){
-    return /^\d$/.test(c);
-}
-function isHexDigit(c){
-    return /^[0-9A-Fa-f]$/.test(c);
-}
-function isOctDigit(c){
-    return /^[0-7]$/.test(c);
-}
-
-
-function digitToInt(c){
-    var res = parseInt(c, 16);
-    return isNaN(res) ? error(digitToInt) : res;
-}
-
-
-var toInteger = parseInt; //TODO
-
-var fromInteger = id; //TODO
-
-var fromIntegral = id; //TODO
-
-function range(lower, upper){
-    return {
-        indexOf: function(ch){ return (ch >= lower && ch <= upper) ? true : -1 },
-        toString: function(){ return "range(" + lower + ", " + upper + ")" }
-    };
-}
-
-function fst(tuple){
-    return tuple[0];
-}
-
-function snd(tuple){
-    return tuple[1];
-}
-
-
-//-- | 'uncurry' converts a curried function to a function on pairs.
-//uncurry                 :: (a -> b -> c) -> ((a, b) -> c)
-//uncurry f p             =  f (fst p) (snd p)
-function uncurry(f){
-    return function(p){
-        return f(p[0], p[1]);
-    }
-}
-
-//-- | @'until' p f@ yields the result of applying @f@ until @p@ holds.
-//until                   :: (a -> Bool) -> (a -> a) -> a -> a
-//until p f x | p x       =  x
-//            | otherwise =  until p f (f x)
-function until(p, f, x) {
-    return p(x) ? x : until(p, f, f(x));
-}
-
-
-//lookup :: (Eq a) => a -> [(a,b)] -> Maybe b
-function lookup(key, arr){
-    var length = arr.length;   
-    if (!length)
-        return Maybe.Nothing;
-    
-    for (var i = 0; i < length; ++i)  
-      if (arr[i][0] === key)
-        return Maybe.Just(arr[i][1]);  
-   
-    return Maybe.Nothing;
-}
-
-function readHex(str){
-    return parseInt(str.join ? str.join("") : str, 16);
-}
-
-function readOct(str){
-    return parseInt(str.join ? str.join("") : str, 8);
-}
 
 // https://developer.mozilla.org/en/Core_JavaScript_1.5_Reference/Objects/String/fromCharCode
 // String.fromCharCode() alone cannot get the character at such a high code point  
@@ -685,57 +422,72 @@ function ord(s){
     return s.charCodeAt(0);
 }
 
+
+function readHex(str){
+    return parseInt(str.join ? str.join("") : str, 16);
+}
+
+function readOct(str){
+    return parseInt(str.join ? str.join("") : str, 8);
+}
+
+function digitToInt(c){
+    var res = parseInt(c, 16);
+    return isNaN(res) ? error(digitToInt) : res;
+}
+
 var round = Math.round;
 
+var toInteger = parseInt; //TODO
 
-function fix_(f) {
-    return function () { return rhs(fix_(f)) }
-}
-/*
-//since it's not lazy this `fix` function doesn't terminate:
-function fix_original(f){ return rhs(fix_original(f)) }
+var fromInteger = id; //TODO
 
-//so we have to use an expanded version:
-function fix_(f){ 
-return function(){ return rhs(fix_(f)) }
-}
+var fromIntegral = id; //TODO
 
-//and call it first to acces the actual one:
-function fact_rhs(getRec){
-return function(n){
-return n == 1 ? 1 : (n * getRec()(n-1))
-}
-}
-//where
-//getRec   == fix_ (f)
-//getRec() == fix_ (f) ()
-//getRec() == fix_original (f)
-
-//an extra call is need here too:
-var fact = fix_(fact_rhs)();
-
-fact(4);
-*/
-
-//the Y-combmiator
-function fix(f) {
-    return (function (g) { return g(g) })
-            (function (h) {
-                return function () { return f(h(h)).apply(null, arguments) }
-            });
-}
-/*
-function fact_rhs(rec){
-return function(n){
-return n == 1 ? 1 : (n * rec(n-1))
-}
+function range(lower, upper){
+    return {
+        indexOf: function(ch){ return (ch >= lower && ch <= upper) ? true : -1 },
+        toString: function(){ return "range(" + lower + ", " + upper + ")" }
+    };
 }
 
-var fact = fix(fact_rhs);
 
-fact(4);
+// * the last return value indicates that the thunk is fully evaluated (i.e. it's not a function), 
+//   and the result is passed to the continuation/callback specified in the program
+// * the second parameter is for making it asynchronous (unless it's Infinity)
+// * if the thunks are not CPS-based then only the synchronous method returns the result,
+//   which must not be a function
+// * the unrolled loops are not _entirely_ pointless: e.g. a complex parser (like the one in WebBits)
+//   can build up hundreds of thousands of thunks even for a smaller document
 
-*/
+function evalThunks(thunk, hundredTimes) {
+
+    if (!hundredTimes || hundredTimes == Infinity) {
+        try {
+            while ((thunk = thunk()()()()()()()()()()()()()()()()()()()()()()()()()
+                                 ()()()()()()()()()()()()()()()()()()()()()()()()()
+                                 ()()()()()()()()()()()()()()()()()()()()()()()()()
+                                 ()()()()()()()()()()()()()()()()()()()()()()()()()
+            ));
+        } catch (_) { }
+        return thunk;
+    }
+
+    function next() {
+        try {
+            var i = hundredTimes;
+            do {
+                thunk = thunk()()()()()()()()()()()()()()()()()()()()()()()()()
+                             ()()()()()()()()()()()()()()()()()()()()()()()()()
+                             ()()()()()()()()()()()()()()()()()()()()()()()()()
+                             ()()()()()()()()()()()()()()()()()()()()()()()()();
+            } while (--i);
+            setTimeout(next, 1);
+        } catch (_) { }
+    }
+    next();
+}
+
 
 
 
@@ -746,21 +498,14 @@ namespace("Haskell_Main", {
     isArray     : isArray,
     isDefined   : isDefined,
     slice       : slice,
-    foldl       : foldl,
-    foldr       : foldr,
     map         : map,
     imap        : imap,
     filter      : filter,
     ifilter     : ifilter,
     indexOf     : indexOf,
     lastIndexOf : lastIndexOf,
-    zip         : zip,
-    sort        : sort,
     isort       : isort,
 
-    nub         : nub,
-    maybe       : maybe,
-    compare     : compare,
     compose     : compose,
     compose1    : compose1,
     call        : call,
@@ -768,19 +513,9 @@ namespace("Haskell_Main", {
     flip        : flip,
     cons        : cons,
     consJoin    : consJoin,
-    replicate   : replicate,
     negate      : negate,
     null_       : null_,
     elem        : elem,
-
-    isSpace     : isSpace,
-    isUpper     : isUpper,
-    isLower     : isLower,
-    isAlpha     : isAlpha,
-    isAlphaNum  : isAlphaNum,
-    isDigit     : isDigit,
-    isHexDigit  : isHexDigit,
-    isOctDigit  : isOctDigit,
 
     digitToInt  : digitToInt,
     range       : range,
@@ -789,16 +524,324 @@ namespace("Haskell_Main", {
     toInteger   : toInteger,
     fromInteger : fromInteger,
     fromIntegral: fromIntegral,
-    fst         : fst,
-    snd         : snd,
-    uncurry     : uncurry,
-    lookup      : lookup,
+
     readHex     : readHex,
     readOct     : readOct,
     chr         : chr,
     round       : round,
-    typeOf      : typeOf
-});/// <reference path="Main.js" />
+    typeOf      : typeOf,
+    strictEq    : strictEq,
+    strictNe    : strictNe,
+    lt          : lt,
+    le          : le,
+    gt          : gt,
+    ge          : ge,
+    not         : not,
+    negate      : negate,
+    evalThunks  : evalThunks
+});
+
+/// <reference path="Main.js" />
+
+// -------------------------------------------------
+// Operators
+// -------------------------------------------------
+
+function infixl(strength){ return ["l", strength] }
+function infixr(strength){ return ["r", strength] }
+function infix (strength){ return ["x", strength] }
+
+function getFixity(opstr){
+    if(!opstr)
+        return;
+    if(opstr._String)
+        return;
+    var op = operators[opstr];
+    if(opstr._Op && !op)
+        return ["l", 9];
+
+    return op && op.fixity;
+}
+
+function getFixityDir(opstr){
+    if(!opstr)
+        return;
+    if(opstr._String)
+        return;
+    var op = operators[opstr];
+    if(opstr._Op && !op)
+        return "l";
+
+    return op && (op.fixity[0] || "l" );
+}
+
+function getFixityStrn(opstr){
+    if(!opstr)
+        return;
+    if(opstr._String)
+        return;
+    var op = operators[opstr];
+    if(opstr._Op && !op)
+        return 9;
+
+    return op && (isDefined(op.fixity[1]) ? op.fixity[1] : 9);
+}
+
+
+var operators = {
+    "$" : {
+        func:   call,
+        fixity: infixr(0)
+        //,type:    [Function, "*", "*"]
+    },
+    "." : {
+        func:   compose1,
+        fixity: infixr(9)
+        //,type:    [Function, Function, Function]
+    },
+    ":" : {
+        func:   cons,
+        fixity: infixr(5)
+    },
+    "++" : {
+        func:   append,
+        fixity: infixr(5)
+    }
+};
+
+
+
+// -------------------------------------------------
+// Array expressions
+// -------------------------------------------------
+
+function Recurse(){}
+var recurse = new Recurse();
+
+// -- see usage in Char
+
+function splice_args(args, i, rec){
+    var op;
+    if(args[i]._Op){
+        delete args[i]._Op;
+        op = args[i];
+    }else
+        op = operators[args[i]].func;
+    
+    var item = op(args[i-1], args[i+1]);
+    args.splice(i-1, 3 , item);
+    return resolve(args, rec);
+}
+
+//In array-expressions if the square brackets are not intended for groupping subexpressions
+//but an actual array is needed the it should be wrapped in `no` (i.e. "not operator")
+//just like if there's a chance that a string might be the same one as an operator.
+//
+//Conversely, functions can be used as operators by wrapping them in `op`.
+//
+//var p = ex(string, no("<|>"), op(parserPlus), return_, no([])).resolve();
+//
+//But usually this can be done by simply using the native javascript call operator:
+//
+//var p = ex(string("<|>"), "<|>", return_([])).resolve();
+
+
+function no(a){
+    if(typeof a == "string"){
+        var string = new String(a);
+        string._String = true;
+        return string;
+    }else{
+        a._Array = true;
+        return a;
+    }
+
+}
+
+function op(fn){
+    fn._Op = true;
+    return fn;
+}
+
+
+//TODO: reject multiple infix operators in the same expression
+function resolve(args, rec){
+    //recurse on nested array-expressions or callstreams
+    args = imap(function(e){
+        if(!e)
+            return e;
+        if(e._Array){
+            delete e._Array;
+            return e;
+        }
+        return (e.constructor == Array) ? resolve(e, rec) :
+                    (e.CallStream) ? e.resolve(rec) : e;
+    }, args);
+    
+    //inject recursive calls
+    if(rec)
+        args = imap(function(e){return e instanceof Recurse ? rec : e}, args);
+    
+    //execute functions between operators
+    var fna = [], fn, newfna = [], i = 0, l = args.length;
+    for(; i < l; ++i){
+        var e = args[i], isOp = false;
+        
+        if(operators[e])
+            isOp = true;
+        if(e && e._String){
+            isOp = false;
+            e = e.toString();
+        }
+        if(e && e._Op)
+            isOp = true;
+
+        if(!isOp && i != (l-1))
+            fna.push(e);
+        else{
+            if(i == (l-1))
+                fna.push(e);
+            if(fna.length> 1){
+                //if(!fna[0] || !fna[0].apply)
+                //    throw ["Expecting function in array-expression instead of " + fna[0], args, fna];
+                var functionInArrayExpr = fna[0];
+                fn = functionInArrayExpr.apply(null, fna.slice(1));
+            }
+            else
+                fn = fna[0];
+            newfna.push(fn);
+            if(i != l-1)
+                newfna.push(e);
+            fna = [];
+        }
+    }
+    args = newfna;
+
+    //execute operators
+    var dir    = imap(getFixityDir , args),
+        strn   = imap(getFixityStrn, args),
+        max    = ifilter(isDefined, strn).sort().pop(),
+        maxfst = indexOf(max, strn),
+        maxlst = lastIndexOf(max, strn);
+    
+    return  dir[maxfst] == "l" ? splice_args(args, maxfst, rec) :
+            dir[maxlst] == "r" ? splice_args(args, maxlst, rec) :
+            dir[maxfst] == "x" ? splice_args(args, maxfst, rec) :
+            args[0];
+}
+
+//TODO: remove
+//Array.prototype.resolve = function(){ return resolve(this) };
+
+//an interface for array-expressions that handles self recursion, and evalutes lazily
+function exl(type){
+    return function(){
+
+        function rec(){ return p.apply(null, arguments) }
+
+        var line = arguments, p, resolved;
+
+        function expr(){
+            return (resolved ? p : expr.resolve()).apply(null, arguments);
+        }
+
+        expr.resolve = function(_rec){
+            if(resolved)
+                return p;
+            p = resolve(line, _rec || rec);
+            line = null;
+            resolved = true;
+            return p;
+        };
+
+        expr.CallStream = true;
+        expr.constructor = type;
+        return expr;
+    }
+}
+
+function exs(){ return resolve(slice(arguments)) };
+
+namespace("Haskell_Expression", {
+    operators : operators,
+    infix     : infix,
+    infixl    : infixl,
+    infixr    : infixr,
+    op        : op,
+    no        : no,
+    //ex        : ex,
+    resolve   : resolve,
+    recurse   : recurse,
+    Recurse   : Recurse,
+    exl       : exl,
+    exs       : exs
+})/// <reference path="Expression.js" />
+
+function Scope(outerScope){
+    this.scope = outerScope;
+}
+
+//#region comment
+/*
+
+The scope chain could be implemented with prototypal inheritance,
+which would be easier to use (no scope.scope.x), but above a limit
+it crashes Firefox (~90k) and Chrome (~1M) as well:
+
+function newScope(outerScope){
+    function Scope(){}
+    Scope.prototype = outerScope;
+    return new Scope();
+}
+
+for(var i = 0, scope; i < 1000000; ++i){
+    function S(){};
+    S.prototype = scope;
+    scope = new S();
+}
+
+Also, this takes twice as much time as simply creating a new object.
+
+*/
+//#endregion
+
+function createDo(inst){
+    return function(){
+
+        function rec(){ return monad.apply(null, arguments) }
+
+        var lines = [], monad, resolved;
+
+        lines.push(resolve(arguments, rec));
+
+        function line(scope){ //TODO: curry -> _length
+            if(resolved || (scope instanceof Scope))
+                return (resolved ? monad : line.resolve()).apply(null, arguments);
+        
+            lines.push(resolve(arguments, rec));
+            return line;
+        }
+
+        line.resolve = function(){
+            if(resolved)
+                return monad;
+            monad = inst.do_.apply(null, lines);
+            resolved = true;
+            lines = null;
+            return monad;
+        };
+
+        line.CallStream = true;
+        line.constructor = inst._type;
+        return line;
+    }
+}
+
+
+namespace("Haskell_Do", {
+    createDo: createDo,
+    Scope   : Scope
+})/// <reference path="Main.js" />
 
 // -------------------------------------------------
 // Type classes
@@ -983,311 +1026,12 @@ function getRangeLength_slower(a){
 */
 //#endregion
 
-namespace("Haskell_Typeclass", {
+namespace("Haskell_TypeClass", {
      typeclass   : typeclass
     ,VARARG      : VARARG
     ,instance    : instance
     ,getInstance : getInstance
     ,asTypeOf    :asTypeOf
-})/// <reference path="Main.js" />
-
-// -------------------------------------------------
-// Operators
-// -------------------------------------------------
-
-function infixl(strength){ return ["l", strength] }
-function infixr(strength){ return ["r", strength] }
-function infix (strength){ return ["x", strength] }
-
-function getFixity(opstr){
-    if(!opstr)
-        return;
-    if(opstr._String)
-        return;
-    var op = operators[opstr];
-    if(opstr._Op && !op)
-        return ["l", 9];
-
-    return op && op.fixity;
-}
-
-function getFixityDir(opstr){
-    if(!opstr)
-        return;
-    if(opstr._String)
-        return;
-    var op = operators[opstr];
-    if(opstr._Op && !op)
-        return "l";
-
-    return op && (op.fixity[0] || "l" );
-}
-
-function getFixityStrn(opstr){
-    if(!opstr)
-        return;
-    if(opstr._String)
-        return;
-    var op = operators[opstr];
-    if(opstr._Op && !op)
-        return 9;
-
-    return op && (isDefined(op.fixity[1]) ? op.fixity[1] : 9);
-}
-
-
-var operators = {
-    "$" : {
-        func:   call,
-        fixity: infixr(0)
-        //,type:    [Function, "*", "*"]
-    },
-    "." : {
-        func:   compose1,
-        fixity: infixr(9)
-        //,type:    [Function, Function, Function]
-    },
-    ":" : {
-        func:   cons,
-        fixity: infixr(5)
-    },
-    "++" : {
-        func:   append,
-        fixity: infixr(5)
-    }
-};
-
-
-
-// -------------------------------------------------
-// Array expressions
-// -------------------------------------------------
-
-function Recurse(){}
-var recurse = new Recurse();
-
-// -- see usage in Char
-
-function splice_args(args, i, rec){
-    var op;
-    if(args[i]._Op){
-        delete args[i]._Op;
-        op = args[i];
-    }else
-        op = operators[args[i]].func;
-    
-    var item = op(args[i-1], args[i+1]);
-    args.splice(i-1, 3 , item);
-    return resolve(args, rec);
-}
-
-//In array-expressions if the square brackets are not intended for groupping subexpressions
-//but an actual array is needed the it should be wrapped in `no` (i.e. "not operator")
-//just like if there's a chance that a string might be the same one as an operator.
-//
-//Conversely, functions can be used as operators by wrapping them in `op`.
-//
-//var p = ex(string, no("<|>"), op(parserPlus), return_, no([])).resolve();
-//
-//But usually this can be done by simply using the native javascript call operator:
-//
-//var p = ex(string("<|>"), "<|>", return_([])).resolve();
-
-
-function no(a){
-    if(typeof a == "string"){
-        var string = new String(a);
-        string._String = true;
-        return string;
-    }else{
-        a._Array = true;
-        return a;
-    }
-
-}
-
-function op(fn){
-    fn._Op = true;
-    return fn;
-}
-
-
-//TODO: reject multiple infix operators in the same expression
-function resolve(args, rec){
-    //recurse on nested array-expressions or callstreams
-    args = imap(function(e){
-        if(!e)
-            return e;
-        if(e._Array){
-            delete e._Array;
-            return e;
-        }
-        return (e.constructor == Array) ? resolve(e, rec) :
-                    (e.CallStream) ? e.resolve(rec) : e;
-    }, args);
-    
-    //inject recursive calls
-    if(rec)
-        args = map(function(e){return e instanceof Recurse ? rec : e}, args);
-    
-    //execute functions between operators
-    var fna = [], fn, newfna = [], i = 0, l = args.length;
-    for(; i < l; ++i){
-        var e = args[i], isOp = false;
-        
-        if(operators[e])
-            isOp = true;
-        if(e && e._String){
-            isOp = false;
-            e = e.toString();
-        }
-        if(e && e._Op)
-            isOp = true;
-
-        if(!isOp && i != (l-1))
-            fna.push(e);
-        else{
-            if(i == (l-1))
-                fna.push(e);
-            if(fna.length> 1){
-                //if(!fna[0] || !fna[0].apply)
-                //    throw ["Expecting function in array-expression instead of " + fna[0], args, fna];
-                var functionInArrayExpr = fna[0];
-                fn = functionInArrayExpr.apply(null, fna.slice(1));
-            }
-            else
-                fn = fna[0];
-            newfna.push(fn);
-            if(i != l-1)
-                newfna.push(e);
-            fna = [];
-        }
-    }
-    args = newfna;
-
-    //execute operators
-    var dir    = imap(getFixityDir , args),
-        strn   = imap(getFixityStrn, args),
-        max    = ifilter(isDefined, strn).sort().pop(),
-        maxfst = indexOf(max, strn),
-        maxlst = lastIndexOf(max, strn);
-    
-    return  dir[maxfst] == "l" ? splice_args(args, maxfst, rec) :
-            dir[maxlst] == "r" ? splice_args(args, maxlst, rec) :
-            dir[maxfst] == "x" ? splice_args(args, maxfst, rec) :
-            args[0];
-}
-
-//TODO: remove
-//Array.prototype.resolve = function(){ return resolve(this) };
-
-//an interface for array-expressions that handles self recursion, and evalutes lazily
-function exl(type){
-    return function(){
-
-        function rec(){ return p.apply(null, arguments) }
-
-        var line = arguments, p, resolved;
-
-        function expr(){
-            return (resolved ? p : expr.resolve()).apply(null, arguments);
-        }
-
-        expr.resolve = function(_rec){
-            if(resolved)
-                return p;
-            p = resolve(line, _rec || rec);
-            line = null;
-            resolved = true;
-            return p;
-        };
-
-        expr.CallStream = true;
-        expr.constructor = type;
-        return expr;
-    }
-}
-
-function exs(){ return resolve(slice(arguments)) };
-
-namespace("Haskell_Expression", {
-    operators : operators,
-    infix     : infix,
-    infixl    : infixl,
-    infixr    : infixr,
-    op        : op,
-    no        : no,
-    //ex        : ex,
-    resolve   : resolve,
-    recurse   : recurse,
-    Recurse   : Recurse,
-    exl       : exl,
-    exs       : exs
-})/// <reference path="Expression.js" />
-
-function Scope(outerScope){
-    this.scope = outerScope;
-}
-
-//#region comment
-/*
-
-The scope chain could be implemented with prototypal inheritance,
-which would be easier to use (no scope.scope.x), but above a limit
-it crashes Firefox (~90k) and Chrome (~1M) as well:
-
-function newScope(outerScope){
-    function Scope(){}
-    Scope.prototype = outerScope;
-    return new Scope();
-}
-
-for(var i = 0, scope; i < 1000000; ++i){
-    function S(){};
-    S.prototype = scope;
-    scope = new S();
-}
-
-Also, this takes twice as much time as simply creating a new object.
-
-*/
-//#endregion
-
-function createDo(inst){
-    return function(){
-
-        function rec(){ return monad.apply(null, arguments) }
-
-        var lines = [], monad, resolved;
-
-        lines.push(resolve(arguments, rec));
-
-        function line(scope){ //TODO: curry -> _length
-            if(resolved || (scope instanceof Scope))
-                return (resolved ? monad : line.resolve()).apply(null, arguments);
-        
-            lines.push(resolve(arguments, rec));
-            return line;
-        }
-
-        line.resolve = function(){
-            if(resolved)
-                return monad;
-            monad = inst.do_.apply(null, lines);
-            resolved = true;
-            lines = null;
-            return monad;
-        };
-
-        line.CallStream = true;
-        line.constructor = inst._type;
-        return line;
-    }
-}
-
-
-namespace("Haskell_Do", {
-    createDo: createDo
 })/// <reference path="Main.js" />
 
 // -------------------------------------------------
@@ -1509,19 +1253,39 @@ data Type a = Constr1 Number a
 
 //#endregion
 
-namespace("Haskell_ADT", {
+namespace("Haskell_DataType", {
     data      : data,
     ADT       : ADT,
     record    : record,
     accessor  : accessor,
     accessors : accessors
-});/// <reference path="ADT.js" />
-/// <reference path="Do.js" />
-/// <reference path="Typeclass.js" />
+});
+}());;(function(){
+/// <reference path="Haskell/Main.js" />
+/// <reference path="Haskell/DataType.js" />
+/// <reference path="Haskell/TypeClass.js" />
+/// <reference path="Haskell/Expression.js" />
+/// <reference path="Haskell/Do.js" />
 
-// -------------------------------------------------
-// Basic data types
-// -------------------------------------------------
+namespace("Haskell")
+
+importSubmodules("Haskell",
+    ["Main"
+    ,"DataType"
+    ,"TypeClass"
+    ,"Expression"
+    ,"Do"
+    ])
+
+}());;(function(){
+;var curry = NS['Haskell'].curry, const_ = NS['Haskell'].const_, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, map = NS['Haskell'].map, imap = NS['Haskell'].imap, filter = NS['Haskell'].filter, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, compose = NS['Haskell'].compose, compose1 = NS['Haskell'].compose1, call = NS['Haskell'].call, id = NS['Haskell'].id, flip = NS['Haskell'].flip, cons = NS['Haskell'].cons, consJoin = NS['Haskell'].consJoin, negate = NS['Haskell'].negate, null_ = NS['Haskell'].null_, elem = NS['Haskell'].elem, digitToInt = NS['Haskell'].digitToInt, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, toInteger = NS['Haskell'].toInteger, fromInteger = NS['Haskell'].fromInteger, fromIntegral = NS['Haskell'].fromIntegral, readHex = NS['Haskell'].readHex, readOct = NS['Haskell'].readOct, chr = NS['Haskell'].chr, round = NS['Haskell'].round, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, not = NS['Haskell'].not, evalThunks = NS['Haskell'].evalThunks, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;﻿/// <reference path="../../jshaskell/src/Haskell.js" local />
+
+
+// This module currently contains only some random generic functions and type classes,
+// later on some of these will be moved to separate modules.
+// Also, for now, most of the list functions doesn't work with strings in _some_ browsers.
+
+
 
 // tuples are not defined with `data`, they are just simple classes
 var Tuple = {};
@@ -1994,45 +1758,340 @@ instance(Show, Object, {
 
 
 
-namespace("Haskell_DataTypes", {
-     Unit      : Unit
-    ,Tuple     : Tuple
-    ,Maybe     : Maybe
-    ,Ordering  : Ordering
-    ,Either    : Either
-    ,Eq        : Eq
-    ,Ord       : Ord
-    ,Functor   : Functor
-    ,Monad     : Monad
-    ,Scope     : Scope
-    ,Show      : Show
+function uncons(a){
+    var isArray = stringAsArray || !(typeof arr == "string"),
+        head = isArray ? a[0] : a.charAt(0),
+        tail = slice(a, 1),
+        res = [head, tail];
+    
+    res.head = head;
+    res.tail = tail;
+    res.constructor = Tuple.Tuple2;
+    return res;
+}
+
+
+
+
+function elemIndex(value, arr) {
+    var length = arr.length;   
+    if(!length)
+        return Maybe.Nothing;
+    
+    var iEq = getInstance(Eq, typeOf(arr[0]));
+    
+    for(var i = 0; i < length; ++i)  
+      if(iEq.eq(arr[i], value))  
+        return  Maybe.Just(i);  
+    
+    return Maybe.Nothing;
+}
+    
+
+//lookup :: (Eq a) => a -> [(a,b)] -> Maybe b
+function lookup(key, arr){
+    var length = arr.length;   
+    if (!length)
+        return Maybe.Nothing;
+    
+    for (var i = 0; i < length; ++i)  
+      if (arr[i][0] === key)
+        return Maybe.Just(arr[i][1]);  
+   
+    return Maybe.Nothing;
+}
+
+
+function sort(arr){
+    function sortFn(a, b){
+        var res = Ord.compare(a, b);
+        return  res.LT ? -1 :
+                res.GT ?  1 :
+                res.EQ ?  0 :
+                error(sort);
+    }
+    if(arr.sort)
+        return arr.sort(sortFn);
+    return slice(arr).sort(sortFn).join("");
+}
+
+
+
+
+
+//-- | The 'nub' function removes duplicate elements from a list.
+//-- In particular, it keeps only the first occurrence of each element.
+//-- (The name 'nub' means \`essence\'.)
+//-- It is a special case of 'nubBy', which allows the programmer to supply
+//-- their own equality test.
+//nub                     :: (Eq a) => [a] -> [a]
+//#ifdef USE_REPORT_PRELUDE
+//nub                     =  nubBy (==)
+//#else
+//-- stolen from HBC
+//nub l                   = nub' l []             -- '
+//  where
+//    nub' [] _           = []                    -- '
+//    nub' (x:xs) ls                              -- '
+//        | x `elem` ls   = nub' xs ls            -- '
+//        | otherwise     = x : nub' xs (x:ls)    -- '
+//#endif
+function nub(arr){
+    function nub_(arr, ls){        
+        var isArray = arr.constructor == Array;
+            x  = isArray ? arr[0] : arr.charAt(0),
+            xs = isArray ? arr.slice(1) : arr.substr(1);
+        
+        return !arr.length ? [] :
+                elem(x, ls) ? nub_(xs, ls) : 
+                cons(x, nub_(xs, cons(x,ls)) );
+    }
+    return nub_(arr, []);
+}
+
+//-- | The 'maybe' function takes a default value, a function, and a 'Maybe'
+//-- value.  If the 'Maybe' value is 'Nothing', the function returns the
+//-- default value.  Otherwise, it applies the function to the value inside
+//-- the 'Just' and returns the result.
+//maybe :: b -> (a -> b) -> Maybe a -> b
+//maybe n _ Nothing  = n
+//maybe _ f (Just x) = f x
+
+function maybe(n, f, m){
+    if(m.Nothing)
+        return n;
+    if(m.Just)
+        return f(m[0]);
+}
+
+//  compare x y = if x == y then EQ
+//                  -- NB: must be '<=' not '<' to validate the
+//                  -- above claim about the minimal things that
+//                  -- can be defined for an instance of Ord:
+//                  else if x <= y then LT
+//                  else GT
+
+function compare(x, y){
+    return x === y ? Ordering.EQ : 
+           x <=  y ? Ordering.LT :
+                     Ordering.GT;
+}
+
+//-- | 'span', applied to a predicate @p@ and a list @xs@, returns a tuple where
+//-- first element is longest prefix (possibly empty) of @xs@ of elements that
+//-- satisfy @p@ and second element is the remainder of the list:
+//-- 
+//-- > span (< 3) [1,2,3,4,1,2,3,4] == ([1,2],[3,4,1,2,3,4])
+//-- > span (< 9) [1,2,3] == ([1,2,3],[])
+//-- > span (< 0) [1,2,3] == ([],[1,2,3])
+//-- 
+//-- 'span' @p xs@ is equivalent to @('takeWhile' p xs, 'dropWhile' p xs)@
+//
+//span                    :: (a -> Bool) -> [a] -> ([a],[a])
+//span _ xs@[]            =  (xs, xs)
+//span p xs@(x:xs')
+//         | p x          =  let (ys,zs) = span p xs' in (x:ys,zs)
+//         | otherwise    =  ([],xs)
+function span(p, xs){
+    var ret;
+    if(!xs.length){
+        ret = [xs, xs];
+    }else{
+        if(p(xs[0])){
+            var tmp = span(p, slice(xs, 1))
+            ret = [cons(xs[0], tmp[0]), tmp[1]]
+        }else
+            ret = [[], xs];
+    }
+    ret.constructor = Tuple.Tuple2;
+    return ret;
+}
+
+
+function fst(tuple){
+    return tuple[0];
+}
+
+function snd(tuple){
+    return tuple[1];
+}
+
+
+//-- | 'uncurry' converts a curried function to a function on pairs.
+//uncurry                 :: (a -> b -> c) -> ((a, b) -> c)
+//uncurry f p             =  f (fst p) (snd p)
+function uncurry(f){
+    return function(p){
+        return f(p[0], p[1]);
+    }
+}
+
+
+//-- | @'until' p f@ yields the result of applying @f@ until @p@ holds.
+//until                   :: (a -> Bool) -> (a -> a) -> a -> a
+//until p f x | p x       =  x
+//            | otherwise =  until p f (f x)
+function until(p, f, x) {
+    return p(x) ? x : until(p, f, f(x));
+}
+
+
+function fix_(f) {
+    return function () { return rhs(fix_(f)) }
+}
+/*
+//since it's not lazy this `fix` function doesn't terminate:
+function fix_original(f){ return rhs(fix_original(f)) }
+
+//so we have to use an expanded version:
+function fix_(f){ 
+return function(){ return rhs(fix_(f)) }
+}
+
+//and call it first to acces the actual one:
+function fact_rhs(getRec){
+return function(n){
+return n == 1 ? 1 : (n * getRec()(n-1))
+}
+}
+//where
+//getRec   == fix_ (f)
+//getRec() == fix_ (f) ()
+//getRec() == fix_original (f)
+
+//an extra call is need here too:
+var fact = fix_(fact_rhs)();
+
+fact(4);
+*/
+
+//the Y-combmiator
+function fix(f) {
+    return (function (g) { return g(g) })
+            (function (h) {
+                return function () { return f(h(h)).apply(null, arguments) }
+            });
+}
+/*
+function fact_rhs(rec){
+return function(n){
+return n == 1 ? 1 : (n * rec(n-1))
+}
+}
+
+var fact = fix(fact_rhs);
+
+fact(4);
+
+*/
+
+
+function isSpace(c){
+    return /^\s$/.test(c);
+}
+function isUpper(c){
+    return c.toUpperCase() == c;
+}
+function isLower(c){
+    return c.toLowerCase() == c;
+}
+function isAlphaNum(c){
+    return /^\w$/.test(c);
+}
+function isAlpha(c){
+    return /^\w$/.test(c) && /^\D$/.test(c);
+}
+function isDigit(c){
+    return /^\d$/.test(c);
+}
+function isHexDigit(c){
+    return /^[0-9A-Fa-f]$/.test(c);
+}
+function isOctDigit(c){
+    return /^[0-7]$/.test(c);
+}
+
+
+
+function foldl(f, initial, arr) {
+    for(var i = 0, l = arr.length; i < l; ++i) 
+        initial = f(initial, arr[i]);
+    return initial;
+}
+
+function foldr(f, initial, arr) {
+    for(var l = arr.length - 1; l > -1 ; --l) 
+        initial = f(arr[l], initial);
+    return initial;
+}
+
+//-- | 'zip' takes two lists and returns a list of corresponding pairs.
+//-- If one input list is short, excess elements of the longer list are
+//-- discarded.
+//zip :: [a] -> [b] -> [(a,b)]
+//zip (a:as) (b:bs) = (a,b) : zip as bs
+//zip _      _      = []
+function zip(arr1, arr2){
+    var res = [], i = 0, l = Math.min(arr1.length, arr2.length);
+    for (; i < l; ++i)
+        res[i] = [arr1[i], arr2[i]];
+    return res;
+}
+
+function replicate(n, x){
+    for (var ret = [], i = 0; i < n; ++i)
+        ret[i] = x;
+    return ret;
+}
+
+namespace("Prelude", {
+     Unit       : Unit
+    ,Tuple      : Tuple
+    ,Maybe      : Maybe
+    ,Ordering   : Ordering
+    ,Either     : Either
+    ,Eq         : Eq
+    ,Ord        : Ord
+    ,Functor    : Functor
+    ,Monad      : Monad
+    ,Show       : Show
+
+    ,foldl      : foldl
+    ,foldr      : foldr
+    ,zip        : zip
+    ,replicate  : replicate
+    ,sort       : sort
+    ,nub        : nub
+    ,maybe      : maybe
+    ,lookup     : lookup
+    ,span       : span
+    ,elemIndex  : elemIndex
+    ,uncons     : uncons
+    ,compare    : compare
+    ,fst        : fst
+    ,snd        : snd
+    ,uncurry    : uncurry
+    ,until      : until
+    ,fix        : fix
+    ,fix_       : fix_
+    ,isSpace    : isSpace
+    ,isUpper    : isUpper
+    ,isLower    : isLower
+    ,isAlpha    : isAlpha
+    ,isAlphaNum : isAlphaNum
+    ,isDigit    : isDigit
+    ,isHexDigit : isHexDigit
+    ,isOctDigit : isOctDigit
+
 })
 //TODO:
 //infix  4  ==, /=, <, <=, >=, >
 //infixr 3  &&
 //infixr 2  ||
 }());;(function(){
-/// <reference path="Haskell/Main.js" />
-/// <reference path="Haskell/ADT.js" />
-/// <reference path="Haskell/Typeclass.js" />
-/// <reference path="Haskell/Expression.js" />
-/// <reference path="Haskell/Do.js" />
-/// <reference path="Haskell/DataTypes.js" />
-
-namespace("Haskell")
-importSubmodules("Haskell",
-    ["Main"
-    ,"ADT"
-    ,"Typeclass"
-    ,"Expression"
-    ,"Do"
-    ,"DataTypes"
-    ])
-
-
-}());;(function(){
-;var curry = NS['Haskell'].curry, const_ = NS['Haskell'].const_, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, foldl = NS['Haskell'].foldl, foldr = NS['Haskell'].foldr, map = NS['Haskell'].map, imap = NS['Haskell'].imap, filter = NS['Haskell'].filter, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, zip = NS['Haskell'].zip, sort = NS['Haskell'].sort, isort = NS['Haskell'].isort, nub = NS['Haskell'].nub, maybe = NS['Haskell'].maybe, compare = NS['Haskell'].compare, compose = NS['Haskell'].compose, compose1 = NS['Haskell'].compose1, call = NS['Haskell'].call, id = NS['Haskell'].id, flip = NS['Haskell'].flip, cons = NS['Haskell'].cons, consJoin = NS['Haskell'].consJoin, replicate = NS['Haskell'].replicate, negate = NS['Haskell'].negate, null_ = NS['Haskell'].null_, elem = NS['Haskell'].elem, isSpace = NS['Haskell'].isSpace, isUpper = NS['Haskell'].isUpper, isLower = NS['Haskell'].isLower, isAlpha = NS['Haskell'].isAlpha, isAlphaNum = NS['Haskell'].isAlphaNum, isDigit = NS['Haskell'].isDigit, isHexDigit = NS['Haskell'].isHexDigit, isOctDigit = NS['Haskell'].isOctDigit, digitToInt = NS['Haskell'].digitToInt, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, toInteger = NS['Haskell'].toInteger, fromInteger = NS['Haskell'].fromInteger, fromIntegral = NS['Haskell'].fromIntegral, fst = NS['Haskell'].fst, snd = NS['Haskell'].snd, uncurry = NS['Haskell'].uncurry, lookup = NS['Haskell'].lookup, readHex = NS['Haskell'].readHex, readOct = NS['Haskell'].readOct, chr = NS['Haskell'].chr, round = NS['Haskell'].round, typeOf = NS['Haskell'].typeOf, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Unit = NS['Haskell'].Unit, Tuple = NS['Haskell'].Tuple, Maybe = NS['Haskell'].Maybe, Ordering = NS['Haskell'].Ordering, Either = NS['Haskell'].Either, Eq = NS['Haskell'].Eq, Ord = NS['Haskell'].Ord, Functor = NS['Haskell'].Functor, Monad = NS['Haskell'].Monad, Scope = NS['Haskell'].Scope, Show = NS['Haskell'].Show;
+;var curry = NS['Haskell'].curry, const_ = NS['Haskell'].const_, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, map = NS['Haskell'].map, imap = NS['Haskell'].imap, filter = NS['Haskell'].filter, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, compose = NS['Haskell'].compose, compose1 = NS['Haskell'].compose1, call = NS['Haskell'].call, id = NS['Haskell'].id, flip = NS['Haskell'].flip, cons = NS['Haskell'].cons, consJoin = NS['Haskell'].consJoin, negate = NS['Haskell'].negate, null_ = NS['Haskell'].null_, elem = NS['Haskell'].elem, digitToInt = NS['Haskell'].digitToInt, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, toInteger = NS['Haskell'].toInteger, fromInteger = NS['Haskell'].fromInteger, fromIntegral = NS['Haskell'].fromIntegral, readHex = NS['Haskell'].readHex, readOct = NS['Haskell'].readOct, chr = NS['Haskell'].chr, round = NS['Haskell'].round, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, not = NS['Haskell'].not, evalThunks = NS['Haskell'].evalThunks, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;var Unit = NS['Prelude'].Unit, Tuple = NS['Prelude'].Tuple, Maybe = NS['Prelude'].Maybe, Ordering = NS['Prelude'].Ordering, Either = NS['Prelude'].Either, Eq = NS['Prelude'].Eq, Ord = NS['Prelude'].Ord, Functor = NS['Prelude'].Functor, Monad = NS['Prelude'].Monad, Show = NS['Prelude'].Show, foldl = NS['Prelude'].foldl, foldr = NS['Prelude'].foldr, zip = NS['Prelude'].zip, replicate = NS['Prelude'].replicate, sort = NS['Prelude'].sort, nub = NS['Prelude'].nub, maybe = NS['Prelude'].maybe, lookup = NS['Prelude'].lookup, span = NS['Prelude'].span, elemIndex = NS['Prelude'].elemIndex, uncons = NS['Prelude'].uncons, compare = NS['Prelude'].compare, fst = NS['Prelude'].fst, snd = NS['Prelude'].snd, uncurry = NS['Prelude'].uncurry, until = NS['Prelude'].until, fix = NS['Prelude'].fix, fix_ = NS['Prelude'].fix_, isSpace = NS['Prelude'].isSpace, isUpper = NS['Prelude'].isUpper, isLower = NS['Prelude'].isLower, isAlpha = NS['Prelude'].isAlpha, isAlphaNum = NS['Prelude'].isAlphaNum, isDigit = NS['Prelude'].isDigit, isHexDigit = NS['Prelude'].isHexDigit, isOctDigit = NS['Prelude'].isOctDigit;
 /// <reference path="../../../../jshaskell/src/Haskell.js" local />
+/// <reference path="../../../../base/src/Prelude.js" local />
 
 // -------------------------------------------------
 // ParseState
@@ -2101,7 +2160,6 @@ ParseState.prototype = {
         if(!result)
             return;
 
-        //result.remaining === this
         this.index  = result.index;
         this.length = result.length;
 
@@ -2112,7 +2170,6 @@ ParseState.prototype = {
         if(!this.memoize)
             return false;
         
-        //cached.remaining === this
         cached.index  = this.index;
         cached.length = this.length;
 
@@ -2159,8 +2216,6 @@ function ps(str) {
 // -------------------------------------------------
 
 
-// remaining: is the remaining string(ParseState) to be parsed
-// matched:   is the portion of the string that was successfully matched by the parser
 // ast:       is the AST returned by the parse, which doesn't need to be successful
 //                this is the value that Functor, Applicative, and Monad functions operate on
 // success:   might be true or false
@@ -2170,39 +2225,23 @@ function ps(str) {
 //                else the latter form should be used (this might be changed later!).
 //                It might be an array of these values, which represents a choice.
 
-
-function make_result(ast, success, expecting){
-    return  {ast: ast
-            ,success: success === undef ? true : success
-            ,expecting: expecting
-            };
-}
-
-var _EmptyOk = make_result(undef);
-
-
-function _fail(expecting){
-    return make_result(undef, false, expecting);
-}
-
-
 function unexpected(name){
     return function(scope, state, k){
-        return k(make_result(null, false, {unexpected: name}));
+        return k({ast: null, success: false, expecting: {unexpected: name}});
     };
 }
 
 //accepts an identifier string, see usage with notFollowedBy
 function unexpectedIdent(name){
     return function(scope, state, k){
-        return k(make_result(null, false, {unexpected: scope[name]}));
+        return k({ast: null, success: false, expecting: {unexpected: scope[name]}});
     };
 }
 
 
 function parserFail(msg){
     return function(scope, state, k){
-        return k(make_result(undef, false, msg));
+        return k({success: false, expecting: msg});
     };
 };
 
@@ -2210,7 +2249,7 @@ var fail = parserFail;
 
 
 function parserZero(scope, state, k){
-    return k(make_result(undef, false));
+    return k({success: false});
 }
 
 var mzero = parserZero;
@@ -2230,32 +2269,9 @@ function toParser(p){
 }
 
 
-function trampoline(x){
-    while(x && x.func)
-        x = x.func.apply(null, x.args || []);
-}
-
-
-function trampolineAsync(x, count){ //TODO: use while
-    count = count || 0 ;
-    count++;
-    
-    if(!(x && x.func)){
-        count = 0;
-        return;
-    }
-
-    x = x.func.apply(null, x.args || []);
-    
-    if(count % 500 == 0 )
-        setTimeout(function(){ trampolineAsync(x, count) }, 1);
-    else
-        trampolineAsync(x, count);
-}
-
 function run(p, strOrState, complete, error, async){
     var input = strOrState instanceof ParseState ? strOrState : ps(strOrState);
-    (async ? trampolineAsync : trampoline) ({func:p, args:[new Scope(), input, function(result){
+    evalThunks(function(){ return p(new Scope(), input, function(result){
         result.state = input;
         delete result.index;
         delete result.length;
@@ -2267,7 +2283,7 @@ function run(p, strOrState, complete, error, async){
             delete result.expecting;
         }
         complete(result);
-    }]});
+    })}, async);
 }
 
 function processError(e, s, i, unexp){
@@ -2298,22 +2314,22 @@ function Parser(){}
 
 function parserBind(p, f){ 
     return function(scope, state, k){
-        return {func:p, args:[scope, state, function(result){
+        return function(){ return p(scope, state, function(result){
             if(result.success){
-                return {func:f(result.ast), args:[scope, state, k]}
+                return function(){ return f(result.ast)(scope, state, k) }
             }else{
                 return k(result);
             }
-        }]};
+        })};
     };
 }
 
 
 var do2 = function(p1, p2){
     function fn(scope, state, k){
-        return { func: p1, args: [scope, state, function(result){
+        return function(){ return p1(scope, state, function(result){
             return result.success ? p2(scope, state, k) : k(result); //TODO: p2
-        }]};
+        })};
     }
     fn.constructor = Parser;
     return fn;
@@ -2342,13 +2358,11 @@ function bind(name, p){
     if(name == "scope")
         throw "Can't use 'scope' as an identifier!";
     return function(scope, state, k){
-        return { func: p, args: [scope, state, function(result){
+        return function(){ return p(scope, state, function(result){
             if(result.success)
                 scope[name] = result.ast;
-            result = extend({}, result);
-            
             return k(result);
-        }]};
+        })};
     };
 }
 
@@ -2360,7 +2374,7 @@ function ret(name, more){
 
     return function(scope, state, k){
 
-        return { func: function(){
+        return function(){ return function(){
             var ast, type = typeof name;
             //if(args){
             //  ast =  resolve(resolveBindings(args, scope));
@@ -2372,7 +2386,7 @@ function ret(name, more){
             }else
                 ast = name(scope);
 
-            return k(make_result(ast));
+            return k({ast: ast, success: true});
 
         }};
     };
@@ -2394,7 +2408,7 @@ function withBound(fn){
 var returnCall = compose(ret, withBound);
 
 function getPosition(scope, state, k){
-    return k(make_result(state.index));
+    return k({ast: state.index, success: true});
 }
 
 var getParserState = getPosition; //TODO?
@@ -2403,7 +2417,7 @@ function setPosition(id){
     var type = typeof id;
     return function(scope, state, k){
         state.scrollTo(type == "string" ? scope[id] : id);
-        return k(_EmptyOk);
+        return k({success: true});
     };
 }
 
@@ -2414,7 +2428,7 @@ var setParserState = setPosition; //TODO?
 //this function does what `pure` and `return` do in Haskell
 function parserReturn(value){
     return function(scope, state, k){
-        return k(make_result(value));
+        return k({ast: value, success: true});
     };
 }
 
@@ -2460,33 +2474,30 @@ function skip_snd(p1, p2){ return do_(bind("a", p1), p2, ret("a")) }
 
 function parserPlus(p1, p2){
     function fn(scope, state, k){
-        return {func: p1, args:[scope, state, function(result){
+        return function(){ return p1(scope, state, function(result){
             var errors =  [];
 
             function handleError(result){
                 var err = result.expecting;
                 if(err){
-                    if(isArray(err))
+                    if(err.constructor == Array)
                         errors = errors.concat(err);
                     else
                         errors.push(err);
                 }
-                if(!result.success)
-                    result.expecting = errors;
-                else
-                    delete result.expecting;
+                result.expecting = result.success ? undef : errors;
             }
             
             handleError(result);
             if(result.ast !== undef)
-                return {func:k, args: [result]};
+                return function(){ return k(result) };
             else
-                return {func: p2, args: [scope, state, function(result){
+                return function(){ return p2(scope, state, function(result){
                     handleError(result);
                     return k(result);
-                }]};
+                })};
             
-        }]};
+        })};
     }
     fn.constructor = Parser;
     return fn;
@@ -2526,24 +2537,21 @@ function tokens(parsers){
         
         function next(parser){
             return function(scope, state, k){
-                return {func:parser, args:[scope, state, function(result){
+                return function(){ return parser(scope, state, function(result){
                     i++;
                     if(!result.success)
                         return k(result);
                     if(result.ast !== undef)
                         ast.push(result.ast);
                     return i < length ? next(parsers[i])(scope, state, k) : k(result);
-                }]};
+                })};
             };
         }
 
-        return {func:next(parsers[i]), args:[scope, state, function(_result){
-            var result = extend({}, _result);
-            result.ast = ast;
-            if(result.success)
-                delete result.expecting;
-            return k(result);
-        }]};
+        return function(){ return next(parsers[i])(scope, state, function(result){
+            var success = result.success;
+            return k({ast: ast, success: success, expecting: success ? undef : result.expecting });
+        })};
     };
 }
 
@@ -2555,7 +2563,7 @@ function _many(onePlusMatch){
             
             function next(parser){
                 return function(scope, state, k){
-                    return {func:parser, args:[scope, state, function(result){
+                    return function(){ return parser(scope, state, function(result){
                         if(!result.success)
                             return k(result);
                             
@@ -2564,20 +2572,17 @@ function _many(onePlusMatch){
                             ast.push(result.ast);
                                 
                         return next(parser)(scope, state, k);
-                    }]};
+                    })};
                 };
             }
     
-            return {func:next(parser), args:[scope, state, function(_result){
-                var result = extend({}, _result);
-                result.success = !onePlusMatch || (matchedOne && onePlusMatch);
-                result.ast = ast;
-                if(result.success)
-                    delete result.expecting;
-                else
-                    result.ast = undef;
-                return k(result);
-            }]};
+            return function(){ return next(parser)(scope, state, function(result){
+                var success = !onePlusMatch || (matchedOne && onePlusMatch);
+                return k({ast: success ? ast : undef
+                         ,success: success
+                         ,expecting: success ? undef : result.expecting
+                         });
+            })};
         };
     };
 }
@@ -2617,13 +2622,13 @@ function tokenPrimP1(fn){
             if(result !== undef)
                 return k(result);
                 
-            return {func:p1, args:[scope, state, function(result){
-                
+            return function(){ return p1(scope, state, function(result){
+                    
                     result = fn(arg2, result, state, startIndex);
                     
                     state.putCached(pid, startIndex, result);
                     return k(result);
-                }]};
+                })};
             
         };
         combinator.constructor = Parser;
@@ -2633,20 +2638,16 @@ function tokenPrimP1(fn){
 
 
 var try_ = tokenPrimP1(function(_, result, state, startIndex){
-    result = extend({}, result);
     if(result.success)
         return result;
     state.scrollTo(startIndex);
-    result.ast = undef;
-    return result;
+    return {ast: undef, success: false, expecting: result.expecting };
 });
 
 
 var skipMany = function(p){
     return tokenPrimP1(function(_, result, state, startIndex){
-        result = extend({}, result);
-        result.ast = undef;
-        return result;
+        return {ast: undef, success: result.success, expecting: result.expecting };
     })(many(p), null);
 };
 
@@ -2654,9 +2655,9 @@ var skipMany = function(p){
 var char_ = tokenPrim(function(c, state, startIndex){
     if(state.length > 0 && state.at(0) == c){
         state.scroll(1);
-        return make_result(c);
+        return {ast: c, success: true};
     }
-    return _fail(c);
+    return {success: false, expecting: c};
 });
 
 
@@ -2665,9 +2666,9 @@ var satisfy = tokenPrim(function(cond, state){
     var fstchar = state.at(0);
     if(state.length > 0 && cond(fstchar)){
         state.scroll(1);
-        return make_result(fstchar);
+        return {ast: fstchar, success: true};
     }
-    return _fail(fstchar);
+    return {success: false, expecting: fstchar};
 });
 
 
@@ -2675,14 +2676,11 @@ var satisfy = tokenPrim(function(cond, state){
 //string :: String -> Parser
 var string = function(s){ //TODO
     return tokenPrimP1(function(_, result, state, startIndex){
-        result = extend({}, result);
-        result.ast = result.ast.join("");
-        if(!result.success)
-            result.expecting = {at:startIndex, expecting: s};
-        else delete result.expecting;
-        if(!result.ast.length) //TODO
-            result.ast = undef;
-        return result;
+        var ast = result.ast.join("");
+        return {ast: ast.length ? ast : undef //TODO
+               ,success: result.success
+               ,expecting: result.success ? undef : {at:startIndex, expecting: s}
+               };
     })(tokens(map(char_, s)), null);
 };
 
@@ -2691,11 +2689,8 @@ var string = function(s){ //TODO
 //              -> (Parser -> a -> Parser)
 //label :: Parser -> String -> Parser
 var label = tokenPrimP1(function(str, result, state, startIndex){
-    if(!result.success){
-        result = extend({}, result);
-        result.expecting = {at: startIndex, expecting: str};
-    }
-    return result;  
+    return result.success ? result : 
+        {ast: result.ast, success: false, expecting: {at: startIndex, expecting: str}};
 });
 
 
@@ -2704,13 +2699,12 @@ var label = tokenPrimP1(function(str, result, state, startIndex){
 
 //match :: StringOrRegex -> Parser
 var match = tokenPrim(function(sr, state){
-        var result;
         if(typeof sr == "string"){
             if(state.substring(0, sr.length) == sr){
                 state.scroll(sr.length);
-                result = make_result(sr);
+                return {ast: sr, success: true};
             }else
-                result = _fail(sr);
+                return {success: false, expecting: sr};
                         
         }else if(sr.exec){
             var rx = new RegExp("^" + sr.source);
@@ -2721,11 +2715,10 @@ var match = tokenPrim(function(sr, state){
             var matched = substr.substr(0, length);
             if(length){
                 state.scroll(length);
-                result = make_result(matched);
+                return {ast: matched, success: true};
             }else
-                result = _fail(sr.source);
+                return {success: false, expecting: sr.source};
         }
-        return result;
 });
 
 
@@ -2847,7 +2840,9 @@ instance(Monad, Parser, function(inst){return{
     return_ : parserReturn,
     fail    : parserFail,
     run     : run
-    /* //the default implementation used (which is slightly slower)
+
+    //the default implementation can be used too, which is slightly slower
+    //because `arguments` and `apply` is used instead of directly calling each function
     ,do$  : function (){
 
         function rec(scope, state, k){ return p(scope, state, k) }
@@ -2877,7 +2872,7 @@ instance(Monad, Parser, function(inst){return{
         line.constructor = Parser;
         return line;
     }
-    */
+    
 }})
 var ParserMonad = getInstance(Monad, Parser);
 var do$ = ParserMonad.do$;
@@ -2897,20 +2892,17 @@ var ex = exl(Parser);
 //              k m m' = do { x <- m; xs <- m'; return (x:xs) }
 function sequence(ms){
     //TODO!!!!
-    var inst = getInstance(Monad, typeOf(ms[0]));
-    var bindVar = NS.Text_Parsec.bind;
-    var ret = NS.Text_Parsec.ret;
-    var withBound = NS.Text_Parsec.withBound;
+    //var inst = getInstance(Monad, typeOf(ms[0]));
 
     function k(m1, m2){
-        return inst.do_(
-            bindVar("x", m1),
-            bindVar("xs", m2),
+        return do_(
+            bind("x", m1),
+            bind("xs", m2),
             ret(withBound(cons, "x", "xs"))
         );
     }
 
-    return foldr(k, inst.return_([]), ms);
+    return foldr(k, return_([]), ms);
 }
 
 namespace("Text_Parsec_Prim", {

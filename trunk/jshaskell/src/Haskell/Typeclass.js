@@ -183,7 +183,7 @@ function getRangeLength_slower(a){
 */
 //#endregion
 
-namespace("Haskell_Typeclass", {
+namespace("Haskell_TypeClass", {
      typeclass   : typeclass
     ,VARARG      : VARARG
     ,instance    : instance

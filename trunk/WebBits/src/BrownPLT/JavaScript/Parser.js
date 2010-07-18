@@ -1,4 +1,5 @@
 /// <reference path="../../../../jshaskell/src/Haskell.js" local />
+/// <reference path="../../../../base/src/Prelude.js" local />
 /// <reference path="../../../../jsparsec/src/Text/Parsec.js" local />
 /// <reference path="Lexer.js" />
 /// <reference path="Syntax.js" />
@@ -111,6 +112,7 @@ function onSameLine1(pos0, pos1, parser){
 
 
 function autoEndStmt(scope, state, k){
+
     var ws = state.input.substring(0, state.index - state.dropped).match(/\s*$/),
         ended = ws && /\n|\r/.test(ws[0]),
         semi;
