@@ -1,3 +1,5 @@
+/// <reference path="../../../../base/src/Data/Char.js" local />
+/// <reference path="../../../../base/src/Data/List.js" local />
 /// <reference path="Prim.js" />
 /// <reference path="Char.js" />
 /// <reference path="Combinator.js" />
@@ -550,7 +552,7 @@ var multiLineComment =
 var noLine   = null_(languageDef.commentLine);
 var noMulti  = null_(languageDef.commentStart);
 
-var whiteSpace = resolve(
+var whiteSpace = exs(
     (noLine && noMulti) ? [skipMany, [simpleSpace ,"<?>", ""]] :
     noLine              ? [skipMany, [simpleSpace ,"<|>", multiLineComment ,"<?>", ""]] :
     noMulti             ? [skipMany, [simpleSpace ,"<|>", oneLineComment ,"<?>", ""]] :
@@ -992,11 +994,11 @@ var int_            = do$( "f" ,"<-", lexeme, sign )
 //  integer         = lexeme int        <?> "integer"
 //  natural         = lexeme nat        <?> "natural"
 
-var naturalOrFloat  = ex(lexeme, natFloat   ,"<?>", "number" ).resolve();
+var naturalOrFloat  = exs(lexeme, natFloat   ,"<?>", "number" );
 
-var float_          = ex(lexeme, floating   ,"<?>", "float"  ).resolve();
-var integer         = ex(lexeme, int_       ,"<?>", "integer").resolve();
-var natural         = ex(lexeme, nat        ,"<?>", "natural").resolve();
+var float_          = exs(lexeme, floating   ,"<?>", "float"  );
+var integer         = exs(lexeme, int_       ,"<?>", "integer");
+var natural         = exs(lexeme, nat        ,"<?>", "natural");
 
 
 
@@ -1138,6 +1140,8 @@ var ident
 //                          GT  -> False
 
 function isReserved(names, name){
+    //var compare = getInstance(Ord, name).compare; //TODO
+    var compare = unsafeCompare;
     function scan(rs){
         if(!rs.length) 
             return false;

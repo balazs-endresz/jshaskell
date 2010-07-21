@@ -1,5 +1,6 @@
 /// <reference path="../../../../jshaskell/src/Haskell.js" local />
 /// <reference path="../../../../base/src/Prelude.js" local />
+/// <reference path="../../../../base/src/Data/Char.js" local />
 /// <reference path="../../../../jsparsec/src/Text/Parsec.js" local />
 /// <reference path="Lexer.js" />
 /// <reference path="Syntax.js" />
@@ -73,7 +74,8 @@ TODO:
    
 */
 
-function dropWhile(p, a){
+
+function dropWhile(p, a){ //TODO
     var str = !!a.charAt;
     for(var i = 0, l = a.length; i < l; ++i)
         if(!p(str ? a.charAt(i) : a[i]))

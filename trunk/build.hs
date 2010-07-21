@@ -124,9 +124,8 @@ simplifyModules mods = mergeModules $ sortModules mods where
         fold acc@(prev:rest) x = mergeTwoModules prev x : rest
 
     sortModules mods = sortBy (comparing enum) mods where
-        order = reverse $ nubBy (eq `on` mPath) (reverse mods)
+        order = nubBy (eq `on` mPath) (mods)
         enum mod = head $ findIndices (\x -> mPath mod == mPath x) order
-
 
 
 --this is used intead of $ show [moduleNames]

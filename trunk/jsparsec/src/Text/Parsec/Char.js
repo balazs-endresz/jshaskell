@@ -1,4 +1,6 @@
+/// <reference path="../../../../base/src/Data/Char.js" local />
 /// <reference path="Prim.js" />
+
 
 // -------------------------------------------------
 // Char
@@ -46,7 +48,7 @@ var noneOf = function(cs){
 //space :: (Stream s m Char) => ParsecT s u m Char
 //space               = satisfy isSpace       <?> "space"
 
-var space = ex(satisfy, isSpace ,"<?>", "space").resolve();
+var space = exs(satisfy, isSpace ,"<?>", "space");
 
 
 // | Skips /zero/ or more white space characters. See also 'skipMany'.
@@ -54,7 +56,7 @@ var space = ex(satisfy, isSpace ,"<?>", "space").resolve();
 //spaces :: (Stream s m Char) => ParsecT s u m ()
 //spaces              = skipMany space        <?> "white space"
 
-var spaces = ex(skipMany, space ,"<?>", "white space").resolve();
+var spaces = exs(skipMany, space ,"<?>", "white space");
 
 
 // | Parses a newline character (\'\\n\'). Returns a newline character. 
@@ -62,14 +64,14 @@ var spaces = ex(skipMany, space ,"<?>", "white space").resolve();
 //newline :: (Stream s m Char) => ParsecT s u m Char
 //newline             = char '\n'             <?> "new-line"
 
-var newline = ex(char_, '\n' ,"<?>", "new-line").resolve();
+var newline = exs(char_, '\n' ,"<?>", "new-line");
 
 // | Parses a tab character (\'\\t\'). Returns a tab character. 
 
 //tab :: (Stream s m Char) => ParsecT s u m Char
 //tab                 = char '\t'             <?> "tab"
 
-var tab = ex(char_, '\t' ,"<?>", "tab").resolve();
+var tab = exs(char_, '\t' ,"<?>", "tab");
 
 // | Parses an upper case letter (a character between \'A\' and \'Z\').
 // Returns the parsed character. 
@@ -77,7 +79,7 @@ var tab = ex(char_, '\t' ,"<?>", "tab").resolve();
 //upper :: (Stream s m Char) => ParsecT s u m Char
 //upper               = satisfy isUpper       <?> "uppercase letter"
 
-var upper = ex(satisfy, isUpper ,"<?>", "uppercase letter").resolve();
+var upper = exs(satisfy, isUpper ,"<?>", "uppercase letter");
 
 
 // | Parses a lower case character (a character between \'a\' and \'z\').
@@ -86,7 +88,7 @@ var upper = ex(satisfy, isUpper ,"<?>", "uppercase letter").resolve();
 //lower :: (Stream s m Char) => ParsecT s u m Char
 //lower               = satisfy isLower       <?> "lowercase letter"
 
-var lower = ex(satisfy, isLower ,"<?>", "lowercase letter").resolve();
+var lower = exs(satisfy, isLower ,"<?>", "lowercase letter");
 
 
 // | Parses a letter or digit (a character between \'0\' and \'9\').
@@ -95,7 +97,7 @@ var lower = ex(satisfy, isLower ,"<?>", "lowercase letter").resolve();
 //alphaNum :: (Stream s m Char => ParsecT s u m Char)
 //alphaNum            = satisfy isAlphaNum    <?> "letter or digit"
 
-var alphaNum = ex(satisfy, isAlphaNum ,"<?>", "letter or digit").resolve();
+var alphaNum = exs(satisfy, isAlphaNum ,"<?>", "letter or digit");
 
 
 // | Parses a letter (an upper case or lower case character). Returns the
@@ -104,14 +106,14 @@ var alphaNum = ex(satisfy, isAlphaNum ,"<?>", "letter or digit").resolve();
 //letter :: (Stream s m Char) => ParsecT s u m Char
 //letter              = satisfy isAlpha       <?> "letter"
 
-var letter = ex(satisfy, isAlpha ,"<?>", "letter").resolve();
+var letter = exs(satisfy, isAlpha ,"<?>", "letter");
 
 // | Parses a digit. Returns the parsed character. 
 
 //digit :: (Stream s m Char) => ParsecT s u m Char
 //digit               = satisfy isDigit       <?> "digit"
 
-var digit = ex(satisfy, isDigit ,"<?>", "digit").resolve();
+var digit = exs(satisfy, isDigit ,"<?>", "digit");
 
 
 // | Parses a hexadecimal digit (a digit or a letter between \'a\' and
@@ -120,7 +122,7 @@ var digit = ex(satisfy, isDigit ,"<?>", "digit").resolve();
 //hexDigit :: (Stream s m Char) => ParsecT s u m Char
 //hexDigit            = satisfy isHexDigit    <?> "hexadecimal digit"
 
-var hexDigit = ex(satisfy, isHexDigit ,"<?>", "hexadecimal digit").resolve();
+var hexDigit = exs(satisfy, isHexDigit ,"<?>", "hexadecimal digit");
 
 
 // | Parses an octal digit (a character between \'0\' and \'7\'). Returns
@@ -129,7 +131,7 @@ var hexDigit = ex(satisfy, isHexDigit ,"<?>", "hexadecimal digit").resolve();
 //octDigit :: (Stream s m Char) => ParsecT s u m Char
 //octDigit            = satisfy isOctDigit    <?> "octal digit"
 
-var octDigit = ex(satisfy, isOctDigit ,"<?>", "octal digit").resolve();
+var octDigit = exs(satisfy, isOctDigit ,"<?>", "octal digit");
 
 
 // | This parser succeeds for any character. Returns the parsed character. 
@@ -137,7 +139,7 @@ var octDigit = ex(satisfy, isOctDigit ,"<?>", "octal digit").resolve();
 //anyChar :: (Stream s m Char) => ParsecT s u m Char
 //anyChar             = satisfy (const True)
 
-var anyChar = ex(satisfy, const_(true)).resolve();
+var anyChar = exs(satisfy, const_(true));
 
 
 // | @char c@ parses a single character @c@. Returns the parsed

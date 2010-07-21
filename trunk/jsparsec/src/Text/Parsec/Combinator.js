@@ -383,10 +383,10 @@ function anyToken(scope, state, k){
     var at = state.at(0);
     if(at.length){
         state.scroll(1);
-        return k(make_result(at));
+        return k({ast: at, success: true});
     }
     
-    return k(_fail("anyToken"));
+    return k({success: false, expecting : "anyToken"});
 }
 
 
@@ -399,10 +399,8 @@ function anyToken(scope, state, k){
 //eof                 = notFollowedBy anyToken <?> "end of input"
 //
 
-// this works too:
-// var eof = [notFollowedBy, anyToken ,"<?>", "end of input"].resolve();
 function eof(scope, state, k){
-    return k(make_result(undef, !state.length, state.length ? "end of input" : undef));
+    return k({success: !state.length, expecting: state.length ? "end of input" : undef});
 }
 
 //-- | @notFollowedBy p@ only succeeds when parser @p@ fails. This parser

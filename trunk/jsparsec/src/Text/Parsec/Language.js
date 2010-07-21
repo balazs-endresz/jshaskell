@@ -96,7 +96,7 @@ var haskellStyle = GenLanguageDef.LanguageDef(record,
                , commentLine    : "--"
                , nestedComments : true
                , identStart     : letter
-               , identLetter    : ex(alphaNum   ,"<|>", oneOf, "_'").resolve()
+               , identLetter    : exs(alphaNum   ,"<|>", oneOf, "_'")
                , opStart        : emptyDefOpLetter
                , opLetter       : emptyDefOpLetter
                , reservedOpNames: []
