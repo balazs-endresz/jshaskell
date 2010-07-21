@@ -179,7 +179,7 @@ function toParser(p){
 
 function run(p, strOrState, complete, error, async){
     var input = strOrState instanceof ParseState ? strOrState : ps(strOrState);
-    evalThunks(function(){ return p(new Scope(), input, function(result){
+    evalThunks(p(new Scope(), input, function(result){
         result.state = input;
         delete result.index;
         delete result.length;
@@ -191,7 +191,7 @@ function run(p, strOrState, complete, error, async){
             delete result.expecting;
         }
         complete(result);
-    })}, async);
+    }), async);
 }
 
 function processError(e, s, i, unexp){
@@ -443,9 +443,9 @@ function tokens(parsers){
             ast = [],
             length = parsers.length;
         
-        function next(parser){
+        function next(parser0){
             return function(scope, state, k){
-                return function(){ return parser(scope, state, function(result){
+                return function(){ return parser0(scope, state, function(result){
                     i++;
                     if(!result.success)
                         return k(result);
@@ -559,7 +559,7 @@ var skipMany = function(p){
     })(many(p), null);
 };
 
-//string :: Char -> Parser
+//char_ :: Char -> Parser
 var char_ = tokenPrim(function(c, state, startIndex){
     if(state.length > 0 && state.at(0) == c){
         state.scroll(1);
@@ -569,7 +569,7 @@ var char_ = tokenPrim(function(c, state, startIndex){
 });
 
 
-//string :: (Char -> Bool) -> Parser
+//satisfy :: (Char -> Bool) -> Parser
 var satisfy = tokenPrim(function(cond, state){
     var fstchar = state.at(0);
     if(state.length > 0 && cond(fstchar)){

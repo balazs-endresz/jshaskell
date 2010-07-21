@@ -45,26 +45,7 @@ function getFixityStrn(opstr){
 }
 
 
-var operators = {
-    "$" : {
-        func:   call,
-        fixity: infixr(0)
-        //,type:    [Function, "*", "*"]
-    },
-    "." : {
-        func:   compose1,
-        fixity: infixr(9)
-        //,type:    [Function, Function, Function]
-    },
-    ":" : {
-        func:   cons,
-        fixity: infixr(5)
-    },
-    "++" : {
-        func:   append,
-        fixity: infixr(5)
-    }
-};
+var operators = {};
 
 
 

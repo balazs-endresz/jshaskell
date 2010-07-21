@@ -68,7 +68,8 @@ var global = function(){ return this }() || window,
     jsenv = { //TODO: not used yet
         isSupported: isSupported,
         isAllowed: isAllowed
-    };
+    },
+    ignoreAsserts = true; //TODO
 
 global.global = global;
 global.namespace = namespace;
@@ -83,8 +84,12 @@ function isDefined(x){ return x !== undef }
 function strictEq(a, b){ return a === b }
 function strictNe(a, b){ return a !== b }
 
-function and(a, b){ return a && b }
-function or (a, b){ return a || b }
+function unsafeAdd(a, b){ return a + b }
+function unsafeSub(a, b){ return a - b }
+function unsafeMul(a, b){ return a * b }
+function unsafeDiv(a, b){ return a / b }
+
+
 
 function lt(a, b){ return a < b  }
 function le(a, b){ return a <= b }
@@ -95,10 +100,7 @@ function negate(a){
     return -a;
 }
 
-function not(a){
-    return (a === true)  ? false :
-           (a === false) ? true  : error(not);
-}
+
 
 //TODO: null ?
 function typeOf(a){
@@ -124,14 +126,6 @@ function curry(fn){
     return ret;
 }
 
-var id = function(x){ return x };
-
-//const_ can be called only with one argument at a time:
-function const_(x){ return function(_){ return x } }
-//but this would work with two arguments as well: const_(x, y)
-//var const_ = curry(function(x, _){ return x });
-
-
 //e.g. eta(error, "Type error") returns a function, which calls error
 //with the rest of the arguments, throwing an exception
 function eta(f){ 
@@ -141,13 +135,6 @@ function eta(f){
     }
 }
 
-function lazy(f){
-    return function(){
-        return f().apply(null, arguments);
-    }
-}
-
-var call = curry(function(a, b){ return a(b) });
 
 function stackTrace(){
     function st(f){
@@ -174,25 +161,16 @@ function extend(a, b){
     return a;
 }
 
-function _namespace(){
-    var o, d;
-    map(function(v) {
-        d = v.split(".");
-        o = window[d[0]] = window[d[0]] || {};
-        map(function(v2){
-            o = o[v2] = o[v2] || {};
-        }, d.slice(1));
-    }, arguments);
-    return o;
-}
-
 
 // -------------------------------------------------
-// Basic List/String functions
+// Basic List/String functions,
+// use ONLY the ones in Prelude or Data_List !!!
 // -------------------------------------------------
 
 var stringAsArray = !!"a"[0]; //TODO
 
+//TODO!!! use only in low level code, 
+//replace occurances with tail/toArray in jsparsec
 var slice = stringAsArray ? 
     function(arr, i1){ return _slice.call(arr, i1 || 0) } :
     function(arr, i1){
@@ -235,19 +213,11 @@ function lastIndexOf(value, arr) {
     return -1;
 }
 
-
 function isort(arr){
-    if(arr.sort)
-        return arr.sort();
-    return slice(arr).sort().join("");
-}
-
-
-function map(f, arr){
-    var res = [], i = 0, l = arr.length;
-    for(; i < l; ++i)
-        res[i] = f(arr[i]);
-    return res;
+    var isStr = arr.charAt,
+        r = toArray(arr);
+    r.sort();
+    return isStr ? r.join("") : r;
 }
 
 var imap = _map ?
@@ -258,14 +228,6 @@ var imap = _map ?
             res[i] = f(arr[i], i, arr);
         return res;
     }
-
-function filter(f, arr) {
-    var res = [], i = 0, l = arr.length;
-    for(; i < l; ++i)
-        if(f(arr[i]))
-            res.push(arr[i]);
-    return res;
-}
 
 var ifilter = _filter ?
     function(f, arr){ return _filter.call(arr, f) } :
@@ -278,137 +240,14 @@ var ifilter = _filter ?
     }
 
 
-// -------------------------------------------------
-// TODO: these should be in separate modules
-// -------------------------------------------------
-
-
-function compose(fst, snd){
-    return function(){
-        return fst(snd.apply(null, arguments));
-    };
+function toArray(a){
+    if(!a.charAt)
+        return _slice.call(a, 0);
+    for(var r = [], i = 0, l = a.length; i < l; ++i)
+        r.push(a.charAt(i));
+    return r;
 }
 
-//this is the same as (.) in Haskell:
-//the inner function receives only the first argument
-function compose1(fst, snd){
-    return function(a){ 
-        var args = slice(arguments, 1);
-        args.unshift(snd(a));
-        return fst.apply(null, args);
-    };
-}
-//(.) :: (b -> c) -> (a -> b) -> a -> c
-//(.) f g x = f (g x)
-
-function flip(fn){
-    return function(a, b){ return fn(b, a) };
-}
-
-function cons(x, xs){
-    if(typeof x == "string" && typeof xs == "string")
-        return x + xs;
-    
-    return [x].concat(xs);
-}
-
-
-function consJoin(x, xs){
-    if(typeof x == "string" && typeof xs == "string")
-        return x + xs;
-    
-    return x + xs.join("");
-}
-
-
-
-//returns True if a list is empty, otherwise False
-function null_(a){
-    return !a.length;
-}
-
-
-function head(a){
-    if(!a.length)
-        error(head);
-    return a.charAt ? a.charAt(0) : a[0];
-}
-
-function append(a, b) {
-    var aIsArray = a.constructor == Array,
-        bIsArray = b.constructor == Array;
-    if(!aIsArray) // first is string
-        return a.concat(bIsArray ? b.join("") : b);
-    else // first is array
-        return a.concat(bIsArray ? b : b.split(""));
-}
-
-function concat(arr){
-    return foldr(function(a, b){ return a.concat(b) }, [], arr);
-}
-
-function drop(n, a){
-    return a.substring ?
-        a.substring(n || 0) :
-        _slice.call(a, n || 0);
-}
-
-function take(n, a){
-    return a.substring ?
-        a.substring(0, n) :
-        _slice.call(a, 0, n);
-}
-
-function elem(x, xs){
-    return (xs.indexOf ? xs.indexOf(x) : indexOf(x, xs)) != -1; //TODO
-}
-
-
-// https://developer.mozilla.org/en/Core_JavaScript_1.5_Reference/Objects/String/fromCharCode
-// String.fromCharCode() alone cannot get the character at such a high code point  
-// The following, on the other hand, can return a 4-byte character as well as the   
-//   usual 2-byte ones (i.e., it can return a single character which actually has   
-//   a string length of 2 instead of 1!)  
-//alert(fixedFromCharCode(0x2F804)); // or 194564 in decimal  
-  
-//function fixedFromCharCode (codePt) {  
-//    if (codePt > 0xFFFF) {  
-//        codePt -= 0x10000;  
-//        return String.fromCharCode(0xD800 + (codePt >> 10), 0xDC00 +  
-//(codePt & 0x3FF));  
-//    }  
-//    else {  
-//        return String.fromCharCode(codePt);  
-//    }  
-//}  
-var chr = String.fromCharCode;
-
-// https://developer.mozilla.org/en/Core_JavaScript_1.5_Reference/Global_Objects/String/charCodeAt
-function ord(s){
-    return s.charCodeAt(0);
-}
-
-
-function readHex(str){
-    return parseInt(str.join ? str.join("") : str, 16);
-}
-
-function readOct(str){
-    return parseInt(str.join ? str.join("") : str, 8);
-}
-
-function digitToInt(c){
-    var res = parseInt(c, 16);
-    return isNaN(res) ? error(digitToInt) : res;
-}
-
-var round = Math.round;
-
-var toInteger = parseInt; //TODO
-
-var fromInteger = id; //TODO
-
-var fromIntegral = id; //TODO
 
 function range(lower, upper){
     return {
@@ -454,56 +293,37 @@ function evalThunks(thunk, hundredTimes) {
     next();
 }
 
-
-
-
+var Bool = Boolean;
 
 namespace("Haskell_Main", {
-    curry       : curry,
-    const_      : const_,
+    Bool        : Bool,
     isArray     : isArray,
     isDefined   : isDefined,
     slice       : slice,
-    map         : map,
     imap        : imap,
-    filter      : filter,
     ifilter     : ifilter,
     indexOf     : indexOf,
     lastIndexOf : lastIndexOf,
     isort       : isort,
-
-    compose     : compose,
-    compose1    : compose1,
-    call        : call,
-    id          : id,
-    flip        : flip,
-    cons        : cons,
-    consJoin    : consJoin,
-    negate      : negate,
-    null_       : null_,
-    elem        : elem,
-
-    digitToInt  : digitToInt,
     range       : range,
     extend      : extend,
     namespace   : namespace,
-    toInteger   : toInteger,
-    fromInteger : fromInteger,
-    fromIntegral: fromIntegral,
-
-    readHex     : readHex,
-    readOct     : readOct,
-    chr         : chr,
-    round       : round,
     typeOf      : typeOf,
     strictEq    : strictEq,
     strictNe    : strictNe,
+    unsafeAdd   : unsafeAdd,
+    unsafeSub   : unsafeSub,
+    unsafeMul   : unsafeMul,
+    unsafeDiv   : unsafeDiv,
     lt          : lt,
     le          : le,
     gt          : gt,
     ge          : ge,
-    not         : not,
     negate      : negate,
-    evalThunks  : evalThunks
+    evalThunks  : evalThunks,
+    toArray     : toArray,
+    curry       : curry,
+    error       : error
+
 });
 

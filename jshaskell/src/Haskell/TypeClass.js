@@ -188,5 +188,5 @@ namespace("Haskell_TypeClass", {
     ,VARARG      : VARARG
     ,instance    : instance
     ,getInstance : getInstance
-    ,asTypeOf    :asTypeOf
+    ,asTypeOf    : asTypeOf
 })
