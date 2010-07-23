@@ -20,6 +20,7 @@ import Control.Exception
 --the file MUST be in the <package name>/src/ folder!
 packageToModule = [("jshaskell", "jshaskell/src/Haskell.js")
                   ,("prelude"  , "base/src/Prelude.js")
+                  ,("pretty"   , "pretty/src/Text/PrettyPrint/HughesPJ.js")
                   ,("jsparsec" , "jsparsec/src/Text/Parsec.js")
                   ,("webbits"  , "WebBits/src/BrownPLT/JavaScript.js")
                   ,("example"  , "example/src/parsejs.js")

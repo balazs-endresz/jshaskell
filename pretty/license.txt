@@ -1,0 +1,14 @@
+/** @license
+ * pretty - A JavaScript port of the Haskell pretty package
+ * 
+ * http://code.google.com/p/jshaskell/
+ * 
+ * Copyright (c) 2010 Balazs Endresz (balazs.endresz@gmail.com)
+ * Dual licensed under the MIT and GPL licenses.
+ *
+ * Original implementation and license:
+ * http://hackage.haskell.org/package/pretty-1.0.1.1
+ *
+ * ------------------------------------------------------------
+ *
+ */

@@ -443,9 +443,9 @@ function tokens(parsers){
             ast = [],
             length = parsers.length;
         
-        function next(parser0){
+        function next(parser){
             return function(scope, state, k){
-                return function(){ return parser0(scope, state, function(result){
+                return function(){ return parser(scope, state, function(result){
                     i++;
                     if(!result.success)
                         return k(result);
