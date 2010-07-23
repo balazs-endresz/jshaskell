@@ -323,7 +323,7 @@ namespace("Haskell_Main", {
     evalThunks  : evalThunks,
     toArray     : toArray,
     curry       : curry,
-    error       : error
-
+    error       : error,
+    eta         : eta
 });
 
