@@ -163,6 +163,13 @@ function data(type, constr){
     }
 }
 
+
+//showConstrOf :: a -> String
+//showConstrOf = Data.Data.showConstr . Data.Data.toConstr
+function showConstrOf(dataType){
+    return dataType._dataConstructor;
+}
+
 //#region comment
 
 //currently type variables on the lhs cannot be declared, and they are not checked at all:
@@ -224,5 +231,6 @@ namespace("Haskell_DataType", {
     ADT       : ADT,
     record    : record,
     accessor  : accessor,
-    accessors : accessors
+    accessors : accessors,
+    showConstrOf : showConstrOf
 });

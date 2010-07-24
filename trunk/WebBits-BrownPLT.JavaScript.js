@@ -34,6 +34,21 @@
  * 
  */
 
+/** @license
+ * pretty - A JavaScript port of the Haskell pretty package
+ * 
+ * http://code.google.com/p/jshaskell/
+ * 
+ * Copyright (c) 2010 Balazs Endresz (balazs.endresz@gmail.com)
+ * Dual licensed under the MIT and GPL licenses.
+ *
+ * Original implementation and license:
+ * http://hackage.haskell.org/package/pretty-1.0.1.1
+ *
+ * ------------------------------------------------------------
+ *
+ */
+
 
 
 /** @license
@@ -195,7 +210,7 @@ function stackTrace(){
 
 function error(a){
     var fnName = (a instanceof Function) ? (a.name || a._name) : null,
-        msg = fnName || a || "Unspecified error",
+        msg = fnName || a || "Unspecified error from " + arguments.callee.caller.name +" <- "+ arguments.callee.caller.caller.name,
         err = new Error(msg);
     try{
         err.stackTrace = stackTrace();
@@ -315,7 +330,7 @@ function range(lower, upper){
 // * the unrolled loops are not _entirely_ pointless: e.g. a complex parser (like the one in WebBits)
 //   can build up hundreds of thousands of thunks even for a smaller document
 
-function evalThunks(thunk, hundredTimes) {
+function _evalThunks(thunk, hundredTimes) {
 
     if (!hundredTimes || hundredTimes == Infinity) {
         try {
@@ -324,7 +339,10 @@ function evalThunks(thunk, hundredTimes) {
                                  ()()()()()()()()()()()()()()()()()()()()()()()()()
                                  ()()()()()()()()()()()()()()()()()()()()()()()()()
             ));
-        } catch (_) { }
+        } catch (e) {
+            //if(!/thunk/.test(e.message))
+                //throw e;
+        }
         return thunk;
     }
 
@@ -342,6 +360,25 @@ function evalThunks(thunk, hundredTimes) {
     }
     next();
 }
+
+//a bit slower version for debugging:
+function evalThunks(thunk, hundredTimes) {
+
+    if (!hundredTimes || hundredTimes == Infinity) {
+        do thunk = thunk()
+        while(thunk && thunk.call)
+        return thunk;
+    }
+
+    function next() {
+            var i = 100*hundredTimes;
+            do thunk = thunk()
+            while (--i && thunk && thunk.call);
+            setTimeout(next, 1);
+    }
+    next();
+}
+
 
 var Bool = Boolean;
 
@@ -378,6 +415,432 @@ namespace("Haskell_Main", {
 });
 
 /// <reference path="Main.js" />
+
+// -------------------------------------------------
+// Algebraic Data Types
+// -------------------------------------------------
+
+var accessors = {};
+
+function accessor(prop, obj){
+    return obj ? obj[prop] : function(obj){ return obj[prop] }
+}
+
+function Record(){}
+var record = new Record();
+
+function ADT(){}
+
+function adtToString(type){
+    return function(){
+        var acc = [], rec = this._recordset;
+        if(rec && (rec.constructor != Array)){
+            for(var name in rec){
+                var item = (type ? (rec[name].name || rec[name]) : this[name]);
+                if(!type && (item instanceof Function))
+                    item = (item.constructor != Function) ?
+                                        item.constructor.name :
+                                        "Function(" + item.name + ")";
+                acc.push(name + (type ? " :: " : " = ") + item );
+            }
+            var indent = replicate(this._dataConstructor.length + 2, " ").join("");
+            acc = "{" + acc.join("\n" + indent + ",") + "\n" + indent +"}";
+        }else{
+            for(var i = 0; i in this; i++)
+                acc.push(type ? (rec[i].name || rec[i]) : this[i]);
+            acc = acc.join(" ");
+        }
+        return "(" + this._dataConstructor + (acc ? " " : "") + acc + ")";
+    };
+}
+
+ADT.prototype.toString = adtToString();
+
+ADT.prototype.dataConstructorToString = adtToString(true);
+
+//defined later
+ADT.prototype.update = eta(error);
+
+function dataError(checkType, valueType, name, typeName, constr) {
+    error("Type error: expecting " + checkType.name + 
+          " instead of " + valueType.name +
+          " in the argument '" + name + "' of " + typeName + "." + constr);
+}
+
+
+function data(type, constr){
+    var typeName = type.name;
+    if(type._constructors)
+        throw "Type constructor has been already defined: '" + typeName + "'";
+    type._constructors = constr;
+
+    type.prototype = new ADT();
+
+    for(var i = 0, l = constr.length; i < l; ++i){
+        var single = typeof constr[i] != "object",
+            name =  single  ? constr[i] : constr[i][0];
+        if(name in type)
+            throw "The name of the data constructor (" +
+                    typeName + "." + name + ") is invalid!";
+
+        type[name] = single ? mkDataCtr(name)() : mkDataCtr(name, slice(constr[i], 1));
+        if(!single)
+            type[name]._length = constr[i].length - 1; //for currying
+    }
+    
+    function mkDataCtr(constr, fields){
+        var recordDef = fields && typeof fields[0] == "object";
+        var recordSet = recordDef && fields[0];
+
+        if(recordDef){
+            //this is used for simulating the record syntax
+            //but it's not guaranteed to work in every javascript environment
+            //beacause it assumes that the keys of objects are iterated
+            //in the order they were defined,
+            //but that is not part of the ECMAScript standard
+            var i = 0, fieldName, propToIndex = {}, indexToProp = {};
+            for (fieldName in recordSet) {
+                var fstchr = fieldName.charAt(0);
+                if ((fstchr == "_") || (fstchr == fstchr.toUpperCase()))
+                    throw typeName + "." + name + "." + fieldName + 
+                          ": record names can't start with underscore or uppercase letters";
+                if (fieldName in ({ update: 1 }))
+                    throw typeName + "." + name + "." + fieldName + ": record name is invalid";
+                
+                propToIndex[fieldName] = i;
+                indexToProp[i] = fieldName;
+                i++;
+            }
+        }
+
+        function create(_isrecord, rec){
+            var isrecord = (_isrecord instanceof Record),
+                adt = new type(),
+                value, valueType, checkType;
+
+            adt.constructor = type;
+            adt._recordset = (recordDef && fields[0]) || fields;
+            adt._dataConstructor = constr;
+            adt[constr] = true;
+
+            if (isrecord) {
+                for (var name in rec) {
+                    value = rec[name];
+
+                    if (!recordDef)
+                        error("Records are not defined for " + typeName + "." + constr);
+
+                    if (!(name in recordSet))
+                        error("The accessor '" + name + "' is not defined for " + typeName + "." + constr);
+
+                    checkType = recordSet[name];
+
+                    if (typeof checkType != "string") {
+                        valueType = typeOf(value);
+                        if (valueType != checkType)
+                            dataError(checkType, valueType, name, typeName, constr);
+                    }
+
+                    adt[name] = value;
+                    adt[propToIndex[name]] = value;
+
+
+                }
+            } else {
+                var args = arguments;
+                for (var i = 0, l = args.length; i < l; ++i) {
+                    value = args[i];
+
+                    checkType = fields[i];
+
+                    if (typeof checkType != "string") {
+                        valueType = typeOf(value);
+                        if (valueType != checkType)
+                            dataError(checkType, valueType, i, typeName, constr);
+                    }
+
+                    adt[i] = value;
+                    if(recordDef)
+                        adt[indexToProp[i]] = value;
+                }
+            }
+            
+            //TODO: deifne as separate function
+            adt.update = function(newRecords){
+                var obj = {};
+                for(var n in recordSet)
+                    obj[n] = (n in newRecords) ? newRecords[n] : this[n];
+                return create(record, obj);
+            };
+            
+            return adt;
+        }
+        return create;
+    }
+}
+
+
+//showConstrOf :: a -> String
+//showConstrOf = Data.Data.showConstr . Data.Data.toConstr
+function showConstrOf(dataType){
+    return dataType._dataConstructor;
+}
+
+//#region comment
+
+//currently type variables on the lhs cannot be declared, and they are not checked at all:
+
+//  function Maybe(){}
+//  data(Maybe, [["Just", "a"], "Nothing"]);
+
+//  var Just    = Maybe.Just;
+//  var Nothing = Maybe.Nothing;
+
+//Just("a") instanceof Maybe
+//Just("a").constructor == Maybe
+//
+//Just("a").Just == true //can be used in place of pattern matching: if(maybeval.Just) ... if(maybeval.Nothing) ...
+//Just("a")[0] == "a"    //access arguments by index
+//
+//Nothing.Nothing == true
+//Nothing == Nothing
+
+
+// using record syntax:
+ 
+/*
+function Type(){}
+
+data(Type, [["Constr1", Number, "a"]
+            ,"Constr2"
+            ,["Constr3", {acc: Number}]
+            ,["Constr4", Number]
+            ]);
+
+//in Haskell:
+data Number = ... -- javascript number type
+data Type a = Constr1 Number a
+            | Constr2
+            | Constr3 {acc :: Number}
+            | Constr4 Number
+*/
+
+//Type.Constr3(record, {acc:1}).Constr3 == true
+//Type.Constr3(record, {acc:1}).acc == 1
+//Type.Constr3(record, {acc:1})[0] == 1
+//Type.Constr3(1)[0] == 1
+//Type.Constr3(1).a == 1
+//Type.Constr2.Constr2 == true
+//Type.Constr2 == Type.Constr2
+
+
+//record update (creates a new object):
+
+//function T(){}
+//data(T, [["C", {a: String,b: String}]]);
+//T.C("2","3").update({a:"4"}).a == "4"
+
+//#endregion
+
+namespace("Haskell_DataType", {
+    data      : data,
+    ADT       : ADT,
+    record    : record,
+    accessor  : accessor,
+    accessors : accessors,
+    showConstrOf : showConstrOf
+});/// <reference path="Main.js" />
+
+// -------------------------------------------------
+// Type classes
+// -------------------------------------------------
+
+//this is used for mapping a type to an object,
+//which contains the instance functions
+function Map() {
+    this.keys = [];
+    this.values = [];
+}
+Map.prototype.put = function (key, val) {
+    this.keys.push(key);
+    this.values.push(val);
+}
+Map.prototype.get = function (key) {
+    var i = indexOf(key, this.keys);
+    if (i == -1) return;
+    return this.values[i];
+}
+
+//if this is used in a type signature then from then on the types are not checked
+var VARARG = {};
+
+//TODO: define aliases for operators
+//TODO: handle non-function types (e.g. Bounded)
+function typeclass(name, tvar) {
+
+    var tcls = {};
+
+    tcls._context = [];
+    //tcls._fnTypes = {};
+    tcls._name = name;
+    tcls._dict = new Map();
+
+    tcls.context = function () {
+        this._context = slice(arguments);
+        delete tcls.context;
+        return this;
+    };
+
+    tcls.types = function (obj) {
+        this._fnTypes = obj;
+        delete tcls.types;
+        return this;
+    };
+    
+    tcls.impl = function (obj) {
+        this._default = obj;
+
+        for (var name in tcls._fnTypes) (function (name, type) {
+
+            //constants can be accessed only from the instances
+            //see: asTypeOf, getInstance, typeOf
+            //but defaults are allowed
+            if ((type !== undef) && (type.constructor != Array)) {
+                tcls[name] = ((typeof obj == "function") ? obj() : obj)[name];
+                return;
+            } else 
+            tcls[name] = function () {
+                var args = arguments;
+                var tctr;
+
+                if((type === undef) || (type === VARARG))
+                    error("There's no type signature for " + tcls._name + "." + name +
+                          ", it can be accessed only by: getInstance(" + 
+                          tcls._name + ", SomeType" + ")." + name);
+                
+                var matched;
+                //TODO: optimize
+                var matches = ifilter(function(arg, i) {
+                    var t = type[i];
+                    if(matched || (t == VARARG))
+                        return (matched = true);
+
+                    var ctr = typeOf(arg);
+                    
+                    if (t == tvar) {
+                        tctr = tctr || ctr;
+                        return tctr == ctr;
+                    }
+                    else
+                        return ctr == t;
+                }, args);
+
+                if (!matched && (matches.length != type.length - 1))
+                    error("Type error in " + tcls._name + "." + name);
+                
+
+                var inst = tcls._dict.get(tctr); //TODO: tcls[tctr.name || tctr._name] || 
+                if (!inst)
+                    error("No " + tcls._name + " instance for " + (tctr.name || tctr._name));
+                return inst[name].apply(null, args);
+            };
+        } (name, tcls._fnTypes[name]));
+
+        delete tcls.impl;
+        return this;
+    };
+
+    return tcls;
+}
+
+function instance(tcls, tctr, defs) {
+    //check if superclasses are defined
+    imap(function (cls) {
+        if (!cls._dict.get(tctr))
+            throw "No " + (cls._name || "") + " instance for " + (tctr.name || tctr._name);
+    }, tcls._context);
+    //create instance
+    var inst = {};
+    //create reference to the type constructor
+    inst._type = tctr;
+    //store the instance on the type class in a map :: Map Type (Instance Type)
+    tcls._dict.put(tctr, inst);
+    //create definitions by optionally passing the instance,
+    //so that methods can refernce each other directly
+    defs = (typeof defs == "function") ? defs(inst) : (defs || {});
+    //copy instance methods or defaults to the instance object 
+    var defaults = tcls._default;
+    defaults = (typeof defaults == "function") ? defaults(inst) : defaults;
+    for(var name in tcls._fnTypes)
+        inst[name] = defs[name] || defaults[name];
+    return inst;
+}
+
+
+//Ord.compare(1,2) -> Ordering.LT
+
+function getInstance(tcls, tctr) {
+    return tcls._dict.get(tctr);
+}
+//var OrdNum = getInstance(Ord, Number)
+//OrdNum.compare(1,2) -> Ordering.LT
+
+function asTypeOf(tcls, method, value) {
+    return tcls._dict.get(typeOf(value))[method];
+    //return getInstance(tcls, typeOf(value))[method];
+}
+
+//#region comment
+/*
+//in contrast with Haskell `asTypeOf` takes a type class, and a method name
+//instead of a function as a first argument
+//it's essential for getting a constant value (not a function) from a type class
+//e.g. since Bounded.maxBound is not a function, but it has different values for each type, 
+//Bounded.maxBound is undefined, maxBound exists only on each instance
+//there are two ways of getting the right value, both are identical:
+
+function getLastIndex1(a){
+    var iBounded = getInstance(Bounded, typeOf(a));
+    return Enum.fromEnum( iBounded.maxBound )    
+}
+
+function getLastIndex2(a){
+    return Enum.fromEnum( asTypeOf(Bounded, "maxBound", a) )
+}
+
+//the same as the second one:
+var getLastIndex3 = compose1(Enum.fromEnum, curry(asTypeOf)(Bounded, "maxBound"))
+
+
+
+//if more functions are used from the same type class (inside a loop for example)
+//then getting the instance explicitly is more efficient, but not necessary:
+function getRangeLength(a){
+    var type     = typeOf(a),
+        iBounded = getInstance(Bounded, type),
+        iEnum    = getInstance(Enum   , type);
+        
+    return iEnum.fromEnum(iBounded.maxBound) - iEnum.fromEnum(iBounded.minBound)
+}
+
+//there's no expicit Enum instance here, so it will be resolved twice:
+function getRangeLength_slower(a){
+    var type     = typeOf(a),
+        iBounded = getInstance(Bounded, type);
+
+    return Enum.fromEnum(iBounded.maxBound) - Enum.fromEnum(iBounded.minBound)
+}
+
+*/
+//#endregion
+
+namespace("Haskell_TypeClass", {
+     typeclass   : typeclass
+    ,VARARG      : VARARG
+    ,instance    : instance
+    ,getInstance : getInstance
+    ,asTypeOf    : asTypeOf
+})/// <reference path="Main.js" />
 
 // -------------------------------------------------
 // Operators
@@ -658,425 +1121,7 @@ function createDo(inst){
 namespace("Haskell_Do", {
     createDo: createDo,
     Scope   : Scope
-})/// <reference path="Main.js" />
-
-// -------------------------------------------------
-// Type classes
-// -------------------------------------------------
-
-//this is used for mapping a type to an object,
-//which contains the instance functions
-function Map() {
-    this.keys = [];
-    this.values = [];
-}
-Map.prototype.put = function (key, val) {
-    this.keys.push(key);
-    this.values.push(val);
-}
-Map.prototype.get = function (key) {
-    var i = indexOf(key, this.keys);
-    if (i == -1) return;
-    return this.values[i];
-}
-
-//if this is used in a type signature then from then on the types are not checked
-var VARARG = {};
-
-//TODO: define aliases for operators
-//TODO: handle non-function types (e.g. Bounded)
-function typeclass(name, tvar) {
-
-    var tcls = {};
-
-    tcls._context = [];
-    //tcls._fnTypes = {};
-    tcls._name = name;
-    tcls._dict = new Map();
-
-    tcls.context = function () {
-        this._context = slice(arguments);
-        delete tcls.context;
-        return this;
-    };
-
-    tcls.types = function (obj) {
-        this._fnTypes = obj;
-        delete tcls.types;
-        return this;
-    };
-    
-    tcls.impl = function (obj) {
-        this._default = obj;
-
-        for (var name in tcls._fnTypes) (function (name, type) {
-
-            //constants can be accessed only from the instances
-            //see: asTypeOf, getInstance, typeOf
-            //but defaults are allowed
-            if ((type !== undef) && (type.constructor != Array)) {
-                tcls[name] = ((typeof obj == "function") ? obj() : obj)[name];
-                return;
-            } else 
-            tcls[name] = function () {
-                var args = arguments;
-                var tctr;
-
-                if((type === undef) || (type === VARARG))
-                    error("There's no type signature for " + tcls._name + "." + name +
-                          ", it can be accessed only by: getInstance(" + 
-                          tcls._name + ", SomeType" + ")." + name);
-                
-                var matched;
-                //TODO: optimize
-                var matches = ifilter(function(arg, i) {
-                    var t = type[i];
-                    if(matched || (t == VARARG))
-                        return (matched = true);
-
-                    var ctr = typeOf(arg);
-                    
-                    if (t == tvar) {
-                        tctr = tctr || ctr;
-                        return tctr == ctr;
-                    }
-                    else
-                        return ctr == t;
-                }, args);
-
-                if (!matched && (matches.length != type.length - 1))
-                    error("Type error in " + tcls._name + "." + name);
-                
-
-                var inst = tcls._dict.get(tctr); //TODO: tcls[tctr.name || tctr._name] || 
-                if (!inst)
-                    error("No " + tcls._name + " instance for " + (tctr.name || tctr._name));
-                return inst[name].apply(null, args);
-            };
-        } (name, tcls._fnTypes[name]));
-
-        delete tcls.impl;
-        return this;
-    };
-
-    return tcls;
-}
-
-function instance(tcls, tctr, defs) {
-    //check if superclasses are defined
-    imap(function (cls) {
-        if (!cls._dict.get(tctr))
-            throw "No " + (cls._name || "") + " instance for " + (tctr.name || tctr._name);
-    }, tcls._context);
-    //create instance
-    var inst = {};
-    //create reference to the type constructor
-    inst._type = tctr;
-    //store the instance on the type class in a map :: Map Type (Instance Type)
-    tcls._dict.put(tctr, inst);
-    //create definitions by optionally passing the instance,
-    //so that methods can refernce each other directly
-    defs = (typeof defs == "function") ? defs(inst) : (defs || {});
-    //copy instance methods or defaults to the instance object 
-    var defaults = tcls._default;
-    defaults = (typeof defaults == "function") ? defaults(inst) : defaults;
-    for(var name in tcls._fnTypes)
-        inst[name] = defs[name] || defaults[name];
-    return inst;
-}
-
-
-//Ord.compare(1,2) -> Ordering.LT
-
-function getInstance(tcls, tctr) {
-    return tcls._dict.get(tctr);
-}
-//var OrdNum = getInstance(Ord, Number)
-//OrdNum.compare(1,2) -> Ordering.LT
-
-function asTypeOf(tcls, method, value) {
-    return tcls._dict.get(typeOf(value))[method];
-    //return getInstance(tcls, typeOf(value))[method];
-}
-
-//#region comment
-/*
-//in contrast with Haskell `asTypeOf` takes a type class, and a method name
-//instead of a function as a first argument
-//it's essential for getting a constant value (not a function) from a type class
-//e.g. since Bounded.maxBound is not a function, but it has different values for each type, 
-//Bounded.maxBound is undefined, maxBound exists only on each instance
-//there are two ways of getting the right value, both are identical:
-
-function getLastIndex1(a){
-    var iBounded = getInstance(Bounded, typeOf(a));
-    return Enum.fromEnum( iBounded.maxBound )    
-}
-
-function getLastIndex2(a){
-    return Enum.fromEnum( asTypeOf(Bounded, "maxBound", a) )
-}
-
-//the same as the second one:
-var getLastIndex3 = compose1(Enum.fromEnum, curry(asTypeOf)(Bounded, "maxBound"))
-
-
-
-//if more functions are used from the same type class (inside a loop for example)
-//then getting the instance explicitly is more efficient, but not necessary:
-function getRangeLength(a){
-    var type     = typeOf(a),
-        iBounded = getInstance(Bounded, type),
-        iEnum    = getInstance(Enum   , type);
-        
-    return iEnum.fromEnum(iBounded.maxBound) - iEnum.fromEnum(iBounded.minBound)
-}
-
-//there's no expicit Enum instance here, so it will be resolved twice:
-function getRangeLength_slower(a){
-    var type     = typeOf(a),
-        iBounded = getInstance(Bounded, type);
-
-    return Enum.fromEnum(iBounded.maxBound) - Enum.fromEnum(iBounded.minBound)
-}
-
-*/
-//#endregion
-
-namespace("Haskell_TypeClass", {
-     typeclass   : typeclass
-    ,VARARG      : VARARG
-    ,instance    : instance
-    ,getInstance : getInstance
-    ,asTypeOf    : asTypeOf
-})/// <reference path="Main.js" />
-
-// -------------------------------------------------
-// Algebraic Data Types
-// -------------------------------------------------
-
-var accessors = {};
-
-function accessor(prop, obj){
-    return obj ? obj[prop] : function(obj){ return obj[prop] }
-}
-
-function Record(){}
-var record = new Record();
-
-function ADT(){}
-
-function adtToString(type){
-    return function(){
-        var acc = [], rec = this._recordset;
-        if(rec && (rec.constructor != Array)){
-            for(var name in rec){
-                var item = (type ? (rec[name].name || rec[name]) : this[name]);
-                if(!type && (item instanceof Function))
-                    item = (item.constructor != Function) ?
-                                        item.constructor.name :
-                                        "Function(" + item.name + ")";
-                acc.push(name + (type ? " :: " : " = ") + item );
-            }
-            var indent = replicate(this._dataConstructor.length + 2, " ").join("");
-            acc = "{" + acc.join("\n" + indent + ",") + "\n" + indent +"}";
-        }else{
-            for(var i = 0; i in this; i++)
-                acc.push(type ? (rec[i].name || rec[i]) : this[i]);
-            acc = acc.join(" ");
-        }
-        return "(" + this._dataConstructor + (acc ? " " : "") + acc + ")";
-    };
-}
-
-ADT.prototype.toString = adtToString();
-
-ADT.prototype.dataConstructorToString = adtToString(true);
-
-//defined later
-ADT.prototype.update = eta(error);
-
-function dataError(checkType, valueType, name, typeName, constr) {
-    error("Type error: expecting " + checkType.name + 
-          " instead of " + valueType.name +
-          " in the argument '" + name + "' of " + typeName + "." + constr);
-}
-
-
-function data(type, constr){
-    var typeName = type.name;
-    if(type._constructors)
-        throw "Type constructor has been already defined: '" + typeName + "'";
-    type._constructors = constr;
-
-    type.prototype = new ADT();
-
-    for(var i = 0, l = constr.length; i < l; ++i){
-        var single = typeof constr[i] != "object",
-            name =  single  ? constr[i] : constr[i][0];
-        if(name in type)
-            throw "The name of the data constructor (" +
-                    typeName + "." + name + ") is invalid!";
-
-        type[name] = single ? mkDataCtr(name)() : mkDataCtr(name, slice(constr[i], 1));
-        if(!single)
-            type[name]._length = constr[i].length - 1; //for currying
-    }
-    
-    function mkDataCtr(constr, fields){
-        var recordDef = fields && typeof fields[0] == "object";
-        var recordSet = recordDef && fields[0];
-
-        if(recordDef){
-            //this is used for simulating the record syntax
-            //but it's not guaranteed to work in every javascript environment
-            //beacause it assumes that the keys of objects are iterated
-            //in the order they were defined,
-            //but that is not part of the ECMAScript standard
-            var i = 0, fieldName, propToIndex = {}, indexToProp = {};
-            for (fieldName in recordSet) {
-                var fstchr = fieldName.charAt(0);
-                if ((fstchr == "_") || (fstchr == fstchr.toUpperCase()))
-                    throw typeName + "." + name + "." + fieldName + 
-                          ": record names can't start with underscore or uppercase letters";
-                if (fieldName in ({ update: 1 }))
-                    throw typeName + "." + name + "." + fieldName + ": record name is invalid";
-                
-                propToIndex[fieldName] = i;
-                indexToProp[i] = fieldName;
-                i++;
-            }
-        }
-
-        function create(_isrecord, rec){
-            var isrecord = (_isrecord instanceof Record),
-                adt = new type(),
-                value, valueType, checkType;
-
-            adt.constructor = type;
-            adt._recordset = (recordDef && fields[0]) || fields;
-            adt._dataConstructor = constr;
-            adt[constr] = true;
-
-            if (isrecord) {
-                for (var name in rec) {
-                    value = rec[name];
-
-                    if (!recordDef)
-                        error("Records are not defined for " + typeName + "." + constr);
-
-                    if (!(name in recordSet))
-                        error("The accessor '" + name + "' is not defined for " + typeName + "." + constr);
-
-                    checkType = recordSet[name];
-
-                    if (typeof checkType != "string") {
-                        valueType = typeOf(value);
-                        if (valueType != checkType)
-                            dataError(checkType, valueType, name, typeName, constr);
-                    }
-
-                    adt[name] = value;
-                    adt[propToIndex[name]] = value;
-
-
-                }
-            } else {
-                var args = arguments;
-                for (var i = 0, l = args.length; i < l; ++i) {
-                    value = args[i];
-
-                    checkType = fields[i];
-
-                    if (typeof checkType != "string") {
-                        valueType = typeOf(value);
-                        if (valueType != checkType)
-                            dataError(checkType, valueType, i, typeName, constr);
-                    }
-
-                    adt[i] = value;
-                    if(recordDef)
-                        adt[indexToProp[i]] = value;
-                }
-            }
-            
-            //TODO: deifne as separate function
-            adt.update = function(newRecords){
-                var obj = {};
-                for(var n in recordSet)
-                    obj[n] = (n in newRecords) ? newRecords[n] : this[n];
-                return create(record, obj);
-            };
-            
-            return adt;
-        }
-        return create;
-    }
-}
-
-//#region comment
-
-//currently type variables on the lhs cannot be declared, and they are not checked at all:
-
-//  function Maybe(){}
-//  data(Maybe, [["Just", "a"], "Nothing"]);
-
-//  var Just    = Maybe.Just;
-//  var Nothing = Maybe.Nothing;
-
-//Just("a") instanceof Maybe
-//Just("a").constructor == Maybe
-//
-//Just("a").Just == true //can be used in place of pattern matching: if(maybeval.Just) ... if(maybeval.Nothing) ...
-//Just("a")[0] == "a"    //access arguments by index
-//
-//Nothing.Nothing == true
-//Nothing == Nothing
-
-
-// using record syntax:
- 
-/*
-function Type(){}
-
-data(Type, [["Constr1", Number, "a"]
-            ,"Constr2"
-            ,["Constr3", {acc: Number}]
-            ,["Constr4", Number]
-            ]);
-
-//in Haskell:
-data Number = ... -- javascript number type
-data Type a = Constr1 Number a
-            | Constr2
-            | Constr3 {acc :: Number}
-            | Constr4 Number
-*/
-
-//Type.Constr3(record, {acc:1}).Constr3 == true
-//Type.Constr3(record, {acc:1}).acc == 1
-//Type.Constr3(record, {acc:1})[0] == 1
-//Type.Constr3(1)[0] == 1
-//Type.Constr3(1).a == 1
-//Type.Constr2.Constr2 == true
-//Type.Constr2 == Type.Constr2
-
-
-//record update (creates a new object):
-
-//function T(){}
-//data(T, [["C", {a: String,b: String}]]);
-//T.C("2","3").update({a:"4"}).a == "4"
-
-//#endregion
-
-namespace("Haskell_DataType", {
-    data      : data,
-    ADT       : ADT,
-    record    : record,
-    accessor  : accessor,
-    accessors : accessors
-});
+})
 }());;(function(){
 /// <reference path="Haskell/Main.js" />
 /// <reference path="Haskell/DataType.js" />
@@ -1095,7 +1140,56 @@ importSubmodules("Haskell",
     ])
 
 }());;(function(){
-;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;;;;;;﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
+;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, showConstrOf = NS['Haskell'].showConstrOf, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;;;;;;﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
+
+//the () type
+function Unit(){}
+data(Unit, ["Unit"])
+var unit = Unit.Unit;
+
+namespace("GHC_Unit", {
+    Unit : Unit,
+    unit : unit
+})﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
+
+// tuples are not defined with `data`, they are just simple classes
+var Tuple = {};
+imap(function (n) {
+    var ntuple = "Tuple" + n;
+    Tuple[ntuple] = function () { };
+    Tuple[ntuple]._name = ntuple;
+    Tuple["tuple" + n] = function (t) {
+        t.constructor = Tuple[ntuple];
+        return t;
+    }
+}, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+
+//#region comment
+
+//var tuple2 = Tuple.tuple2([1,2]);
+//tuple2.constructor == Tuple.Tuple2; //==> true
+//
+//to avoid creating a new object, only the constructor is replaced,
+//so instanceof gives wrong results:
+//
+//tuple2 instanceof Tuple.Tuple2; //==> false
+//tuple2 instanceof Array; //==> true
+
+//#endregion
+
+//generic tuple "data constructor", which transforms any array to a tuple
+function tuple(t) {
+    var ntuple = "Tuple" + t.length;
+    t.constructor = Tuple[ntuple];
+    return t;
+}
+
+Tuple.tuple = tuple;
+
+namespace("GHC_Tuple", {
+    Tuple : Tuple,
+    tuple : tuple
+})﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
 
 function Ordering(){}
 data(Ordering, ["LT", "EQ", "GT"]);
@@ -1256,55 +1350,6 @@ namespace("GHC_Classes", {
     ,andOp : andOp
     ,orOp  : orOp
     ,not   : not
-})﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
-
-// tuples are not defined with `data`, they are just simple classes
-var Tuple = {};
-imap(function (n) {
-    var ntuple = "Tuple" + n;
-    Tuple[ntuple] = function () { };
-    Tuple[ntuple]._name = ntuple;
-    Tuple["tuple" + n] = function (t) {
-        t.constructor = Tuple[ntuple];
-        return t;
-    }
-}, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-
-//#region comment
-
-//var tuple2 = Tuple.tuple2([1,2]);
-//tuple2.constructor == Tuple.Tuple2; //==> true
-//
-//to avoid creating a new object, only the constructor is replaced,
-//so instanceof gives wrong results:
-//
-//tuple2 instanceof Tuple.Tuple2; //==> false
-//tuple2 instanceof Array; //==> true
-
-//#endregion
-
-//generic tuple "data constructor", which transforms any array to a tuple
-function tuple(t) {
-    var ntuple = "Tuple" + t.length;
-    t.constructor = Tuple[ntuple];
-    return t;
-}
-
-Tuple.tuple = tuple;
-
-namespace("GHC_Tuple", {
-    Tuple : Tuple,
-    tuple : tuple
-})﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
-
-//the () type
-function Unit(){}
-data(Unit, ["Unit"])
-var unit = Unit.Unit;
-
-namespace("GHC_Unit", {
-    Unit : Unit,
-    unit : unit
 })﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
 /// <reference path="Unit.js" local />
 /// <reference path="Tuple.js" local />
@@ -4106,7 +4151,388 @@ namespace("GHC_Unicode", {
     ,toTitle    : toTitle
 })
 }());;(function(){
-;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;var Maybe = NS['GHC_Maybe'].Maybe;;var Unit = NS['GHC_Base'].Unit, Tuple = NS['GHC_Base'].Tuple, Bool = NS['GHC_Base'].Bool, Ordering = NS['GHC_Base'].Ordering, Eq = NS['GHC_Base'].Eq, Ord = NS['GHC_Base'].Ord, andOp = NS['GHC_Base'].andOp, orOp = NS['GHC_Base'].orOp, not = NS['GHC_Base'].not, Functor = NS['GHC_Base'].Functor, Monad = NS['GHC_Base'].Monad, emptyListOf = NS['GHC_Base'].emptyListOf, cons = NS['GHC_Base'].cons, consJoin = NS['GHC_Base'].consJoin, uncons = NS['GHC_Base'].uncons, augment = NS['GHC_Base'].augment, map = NS['GHC_Base'].map, foldr = NS['GHC_Base'].foldr, append = NS['GHC_Base'].append, otherwise = NS['GHC_Base'].otherwise, ord = NS['GHC_Base'].ord, chr = NS['GHC_Base'].chr, eqString = NS['GHC_Base'].eqString, minInt = NS['GHC_Base'].minInt, maxInt = NS['GHC_Base'].maxInt, id = NS['GHC_Base'].id, lazy = NS['GHC_Base'].lazy, assert = NS['GHC_Base'].assert, const_ = NS['GHC_Base'].const_, compose1 = NS['GHC_Base'].compose1, compose = NS['GHC_Base'].compose, flip = NS['GHC_Base'].flip, call = NS['GHC_Base'].call, until = NS['GHC_Base'].until, asTypeOf = NS['GHC_Base'].asTypeOf, elemIndex = NS['GHC_Base'].elemIndex, unsafeCompare = NS['GHC_Base'].unsafeCompare, readHex = NS['GHC_Base'].readHex, readOct = NS['GHC_Base'].readOct, round = NS['GHC_Base'].round, toInteger = NS['GHC_Base'].toInteger, fromInteger = NS['GHC_Base'].fromInteger, fromIntegral = NS['GHC_Base'].fromIntegral;;var map = NS['GHC_List'].map, append = NS['GHC_List'].append, filter = NS['GHC_List'].filter, concat = NS['GHC_List'].concat, head = NS['GHC_List'].head, last = NS['GHC_List'].last, tail = NS['GHC_List'].tail, init = NS['GHC_List'].init, null_ = NS['GHC_List'].null_, length = NS['GHC_List'].length, index = NS['GHC_List'].index, foldl = NS['GHC_List'].foldl, scanl = NS['GHC_List'].scanl, scanl1 = NS['GHC_List'].scanl1, foldr = NS['GHC_List'].foldr, foldr1 = NS['GHC_List'].foldr1, scanr = NS['GHC_List'].scanr, scanr1 = NS['GHC_List'].scanr1, replicate = NS['GHC_List'].replicate, take = NS['GHC_List'].take, drop = NS['GHC_List'].drop, splitAt = NS['GHC_List'].splitAt, takeWhile = NS['GHC_List'].takeWhile, dropWhile = NS['GHC_List'].dropWhile, span = NS['GHC_List'].span, break_ = NS['GHC_List'].break_, reverse = NS['GHC_List'].reverse, and = NS['GHC_List'].and, or = NS['GHC_List'].or, any = NS['GHC_List'].any, all = NS['GHC_List'].all, elem = NS['GHC_List'].elem, notElem = NS['GHC_List'].notElem, lookup = NS['GHC_List'].lookup, concatMap = NS['GHC_List'].concatMap, zip = NS['GHC_List'].zip, zip3 = NS['GHC_List'].zip3, zipWith = NS['GHC_List'].zipWith, zipWith3 = NS['GHC_List'].zipWith3, unzip = NS['GHC_List'].unzip, unzip3 = NS['GHC_List'].unzip3, errorEmptyList = NS['GHC_List'].errorEmptyList;;;var Unit = NS['GHC_Unit'].Unit, unit = NS['GHC_Unit'].unit;;var Tuple = NS['GHC_Tuple'].Tuple, tuple = NS['GHC_Tuple'].tuple;;var Ordering = NS['GHC_Ordering'].Ordering;;var Eq = NS['GHC_Classes'].Eq, Ord = NS['GHC_Classes'].Ord, andOp = NS['GHC_Classes'].andOp, orOp = NS['GHC_Classes'].orOp, not = NS['GHC_Classes'].not;;var Bool = NS['Haskell_Main'].Bool, isArray = NS['Haskell_Main'].isArray, isDefined = NS['Haskell_Main'].isDefined, slice = NS['Haskell_Main'].slice, imap = NS['Haskell_Main'].imap, ifilter = NS['Haskell_Main'].ifilter, indexOf = NS['Haskell_Main'].indexOf, lastIndexOf = NS['Haskell_Main'].lastIndexOf, isort = NS['Haskell_Main'].isort, range = NS['Haskell_Main'].range, extend = NS['Haskell_Main'].extend, namespace = NS['Haskell_Main'].namespace, typeOf = NS['Haskell_Main'].typeOf, strictEq = NS['Haskell_Main'].strictEq, strictNe = NS['Haskell_Main'].strictNe, unsafeAdd = NS['Haskell_Main'].unsafeAdd, unsafeSub = NS['Haskell_Main'].unsafeSub, unsafeMul = NS['Haskell_Main'].unsafeMul, unsafeDiv = NS['Haskell_Main'].unsafeDiv, lt = NS['Haskell_Main'].lt, le = NS['Haskell_Main'].le, gt = NS['Haskell_Main'].gt, ge = NS['Haskell_Main'].ge, negate = NS['Haskell_Main'].negate, evalThunks = NS['Haskell_Main'].evalThunks, toArray = NS['Haskell_Main'].toArray, curry = NS['Haskell_Main'].curry, error = NS['Haskell_Main'].error, eta = NS['Haskell_Main'].eta;;var data = NS['Haskell_DataType'].data, ADT = NS['Haskell_DataType'].ADT, record = NS['Haskell_DataType'].record, accessor = NS['Haskell_DataType'].accessor, accessors = NS['Haskell_DataType'].accessors;;var isSpace = NS['GHC_Unicode'].isSpace, isUpper = NS['GHC_Unicode'].isUpper, isLower = NS['GHC_Unicode'].isLower, isAlpha = NS['GHC_Unicode'].isAlpha, isAlphaNum = NS['GHC_Unicode'].isAlphaNum, isDigit = NS['GHC_Unicode'].isDigit, isHexDigit = NS['GHC_Unicode'].isHexDigit, isOctDigit = NS['GHC_Unicode'].isOctDigit, toUpper = NS['GHC_Unicode'].toUpper, toLower = NS['GHC_Unicode'].toLower, toTitle = NS['GHC_Unicode'].toTitle;;var Show = NS['GHC_Show'].Show;﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
+;var Unit = NS['GHC_Base'].Unit, Tuple = NS['GHC_Base'].Tuple, Bool = NS['GHC_Base'].Bool, Ordering = NS['GHC_Base'].Ordering, Eq = NS['GHC_Base'].Eq, Ord = NS['GHC_Base'].Ord, andOp = NS['GHC_Base'].andOp, orOp = NS['GHC_Base'].orOp, not = NS['GHC_Base'].not, Functor = NS['GHC_Base'].Functor, Monad = NS['GHC_Base'].Monad, emptyListOf = NS['GHC_Base'].emptyListOf, cons = NS['GHC_Base'].cons, consJoin = NS['GHC_Base'].consJoin, uncons = NS['GHC_Base'].uncons, augment = NS['GHC_Base'].augment, map = NS['GHC_Base'].map, foldr = NS['GHC_Base'].foldr, append = NS['GHC_Base'].append, otherwise = NS['GHC_Base'].otherwise, ord = NS['GHC_Base'].ord, chr = NS['GHC_Base'].chr, eqString = NS['GHC_Base'].eqString, minInt = NS['GHC_Base'].minInt, maxInt = NS['GHC_Base'].maxInt, id = NS['GHC_Base'].id, lazy = NS['GHC_Base'].lazy, assert = NS['GHC_Base'].assert, const_ = NS['GHC_Base'].const_, compose1 = NS['GHC_Base'].compose1, compose = NS['GHC_Base'].compose, flip = NS['GHC_Base'].flip, call = NS['GHC_Base'].call, until = NS['GHC_Base'].until, asTypeOf = NS['GHC_Base'].asTypeOf, elemIndex = NS['GHC_Base'].elemIndex, unsafeCompare = NS['GHC_Base'].unsafeCompare, readHex = NS['GHC_Base'].readHex, readOct = NS['GHC_Base'].readOct, round = NS['GHC_Base'].round, toInteger = NS['GHC_Base'].toInteger, fromInteger = NS['GHC_Base'].fromInteger, fromIntegral = NS['GHC_Base'].fromIntegral;;var data = NS['Haskell_DataType'].data, ADT = NS['Haskell_DataType'].ADT, record = NS['Haskell_DataType'].record, accessor = NS['Haskell_DataType'].accessor, accessors = NS['Haskell_DataType'].accessors, showConstrOf = NS['Haskell_DataType'].showConstrOf;;var Bool = NS['Haskell_Main'].Bool, isArray = NS['Haskell_Main'].isArray, isDefined = NS['Haskell_Main'].isDefined, slice = NS['Haskell_Main'].slice, imap = NS['Haskell_Main'].imap, ifilter = NS['Haskell_Main'].ifilter, indexOf = NS['Haskell_Main'].indexOf, lastIndexOf = NS['Haskell_Main'].lastIndexOf, isort = NS['Haskell_Main'].isort, range = NS['Haskell_Main'].range, extend = NS['Haskell_Main'].extend, namespace = NS['Haskell_Main'].namespace, typeOf = NS['Haskell_Main'].typeOf, strictEq = NS['Haskell_Main'].strictEq, strictNe = NS['Haskell_Main'].strictNe, unsafeAdd = NS['Haskell_Main'].unsafeAdd, unsafeSub = NS['Haskell_Main'].unsafeSub, unsafeMul = NS['Haskell_Main'].unsafeMul, unsafeDiv = NS['Haskell_Main'].unsafeDiv, lt = NS['Haskell_Main'].lt, le = NS['Haskell_Main'].le, gt = NS['Haskell_Main'].gt, ge = NS['Haskell_Main'].ge, negate = NS['Haskell_Main'].negate, evalThunks = NS['Haskell_Main'].evalThunks, toArray = NS['Haskell_Main'].toArray, curry = NS['Haskell_Main'].curry, error = NS['Haskell_Main'].error, eta = NS['Haskell_Main'].eta;;var Eq = NS['GHC_Classes'].Eq, Ord = NS['GHC_Classes'].Ord, andOp = NS['GHC_Classes'].andOp, orOp = NS['GHC_Classes'].orOp, not = NS['GHC_Classes'].not;;var Ordering = NS['GHC_Ordering'].Ordering;;var Tuple = NS['GHC_Tuple'].Tuple, tuple = NS['GHC_Tuple'].tuple;;var Unit = NS['GHC_Unit'].Unit, unit = NS['GHC_Unit'].unit;;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, showConstrOf = NS['Haskell'].showConstrOf, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;var Maybe = NS['GHC_Maybe'].Maybe;;;var map = NS['GHC_List'].map, append = NS['GHC_List'].append, filter = NS['GHC_List'].filter, concat = NS['GHC_List'].concat, head = NS['GHC_List'].head, last = NS['GHC_List'].last, tail = NS['GHC_List'].tail, init = NS['GHC_List'].init, null_ = NS['GHC_List'].null_, length = NS['GHC_List'].length, index = NS['GHC_List'].index, foldl = NS['GHC_List'].foldl, scanl = NS['GHC_List'].scanl, scanl1 = NS['GHC_List'].scanl1, foldr = NS['GHC_List'].foldr, foldr1 = NS['GHC_List'].foldr1, scanr = NS['GHC_List'].scanr, scanr1 = NS['GHC_List'].scanr1, replicate = NS['GHC_List'].replicate, take = NS['GHC_List'].take, drop = NS['GHC_List'].drop, splitAt = NS['GHC_List'].splitAt, takeWhile = NS['GHC_List'].takeWhile, dropWhile = NS['GHC_List'].dropWhile, span = NS['GHC_List'].span, break_ = NS['GHC_List'].break_, reverse = NS['GHC_List'].reverse, and = NS['GHC_List'].and, or = NS['GHC_List'].or, any = NS['GHC_List'].any, all = NS['GHC_List'].all, elem = NS['GHC_List'].elem, notElem = NS['GHC_List'].notElem, lookup = NS['GHC_List'].lookup, concatMap = NS['GHC_List'].concatMap, zip = NS['GHC_List'].zip, zip3 = NS['GHC_List'].zip3, zipWith = NS['GHC_List'].zipWith, zipWith3 = NS['GHC_List'].zipWith3, unzip = NS['GHC_List'].unzip, unzip3 = NS['GHC_List'].unzip3, errorEmptyList = NS['GHC_List'].errorEmptyList;;var Show = NS['GHC_Show'].Show;;var isSpace = NS['GHC_Unicode'].isSpace, isUpper = NS['GHC_Unicode'].isUpper, isLower = NS['GHC_Unicode'].isLower, isAlpha = NS['GHC_Unicode'].isAlpha, isAlphaNum = NS['GHC_Unicode'].isAlphaNum, isDigit = NS['GHC_Unicode'].isDigit, isHexDigit = NS['GHC_Unicode'].isHexDigit, isOctDigit = NS['GHC_Unicode'].isOctDigit, toUpper = NS['GHC_Unicode'].toUpper, toLower = NS['GHC_Unicode'].toLower, toTitle = NS['GHC_Unicode'].toTitle;﻿/// <reference path="../../../jshaskell/src/Haskell/Main.js" local />
+/// <reference path="../../../jshaskell/src/Haskell/DataType.js" local />
+/// <reference path="../../../base/src/GHC/Base.js" local />
+
+//{-# OPTIONS_GHC -XNoImplicitPrelude #-}
+//-----------------------------------------------------------------------------
+//-- |
+//-- Module      :  Data.Either
+//-- Copyright   :  (c) The University of Glasgow 2001
+//-- License     :  BSD-style (see the file libraries/base/LICENSE)
+//-- 
+//-- Maintainer  :  libraries@haskell.org
+//-- Stability   :  experimental
+//-- Portability :  portable
+//--
+//-- The Either type, and associated operations.
+//--
+//-----------------------------------------------------------------------------
+
+//module Data.Either (
+//   Either(..),
+//   either,           -- :: (a -> c) -> (b -> c) -> Either a b -> c
+//   lefts,            -- :: [Either a b] -> [a]
+//   rights,           -- :: [Either a b] -> [b]
+//   partitionEithers, -- :: [Either a b] -> ([a],[b])
+// ) where
+
+//#include "Typeable.h"
+
+//#ifdef __GLASGOW_HASKELL__
+//import GHC.Base
+//import GHC.Show
+//import GHC.Read
+//#endif
+
+//import Data.Typeable
+
+//#ifdef __GLASGOW_HASKELL__
+//{-
+//-- just for testing
+//import Test.QuickCheck
+//-}
+
+//{-|
+
+//The 'Either' type represents values with two possibilities: a value of
+//type @'Either' a b@ is either @'Left' a@ or @'Right' b@.
+
+//The 'Either' type is sometimes used to represent a value which is
+//either correct or an error; by convention, the 'Left' constructor is
+//used to hold an error value and the 'Right' constructor is used to
+//hold a correct value (mnemonic: \"right\" also means \"correct\").
+//-}
+//data  Either a b  =  Left a | Right b   deriving (Eq, Ord, Read, Show)
+function Either(){}
+data(Either, [["Left", "a"], ["Right", "b"]]);
+
+//-- | Case analysis for the 'Either' type.
+//-- If the value is @'Left' a@, apply the first function to @a@;
+//-- if it is @'Right' b@, apply the second function to @b@.
+//either                  :: (a -> c) -> (b -> c) -> Either a b -> c
+//either f _ (Left x)     =  f x
+//either _ g (Right y)    =  g y
+//#endif  /* __GLASGOW_HASKELL__ */
+function either(f, g, e){
+    return  e.Left  ? f(e[0]) :
+            e.Right ? g(e[0]) :
+            error(either);
+}
+
+//INSTANCE_TYPEABLE2(Either,eitherTc,"Either")
+
+//-- | Extracts from a list of 'Either' all the 'Left' elements
+//-- All the 'Left' elements are extracted in order.
+
+//lefts   :: [Either a b] -> [a]
+//lefts x = [a | Left a <- x]
+function lefts(eithers){
+    var acc = [];
+    for(var i = 0, l = eithers.length; i < l; ++i){
+        var either = eithers[i];
+        if(either.Left)
+            acc.push(either[0]);
+    }
+    return acc;
+}
+
+//-- | Extracts from a list of 'Either' all the 'Right' elements
+//-- All the 'Right' elements are extracted in order.
+
+//rights   :: [Either a b] -> [b]
+//rights x = [a | Right a <- x]
+function rights(eithers){
+    var acc = [];
+    for(var i = 0, l = eithers.length; i < l; ++i){
+        var either = eithers[i];
+        if(either.Right)
+            acc.push(either[0]);
+    }
+    return acc;
+}
+
+//-- | Partitions a list of 'Either' into two lists
+//-- All the 'Left' elements are extracted, in order, to the first
+//-- component of the output.  Similarly the 'Right' elements are extracted
+//-- to the second component of the output.
+
+//partitionEithers :: [Either a b] -> ([a],[b])
+//partitionEithers = foldr (either left right) ([],[])
+// where
+//  left  a (l, r) = (a:l, r)
+//  right a (l, r) = (l, a:r)
+function partitionEithers(eithers){
+    function left(a){
+        return function(t){
+            return [cons(a, t[0]), t[1]];
+        }
+    }
+    function right(a){
+        return function(t){
+            return [t[0], cons(a, t[1])];
+        }
+    }
+
+    return foldr(function(a, b){ return either(left, right, a)(b) }, [[],[]], eithers);
+}
+
+//{-
+//{--------------------------------------------------------------------
+//  Testing
+//--------------------------------------------------------------------}
+//prop_partitionEithers :: [Either Int Int] -> Bool
+//prop_partitionEithers x =
+//  partitionEithers x == (lefts x, rights x)
+//-}
+
+namespace("Data_Either", {
+     Either : Either
+    ,either : either           //:: (a -> c) -> (b -> c) -> Either a b -> c
+    ,lefts  : lefts            //:: [Either a b] -> [a]
+    ,rights : rights           //:: [Either a b] -> [b]
+    ,partitionEithers : partitionEithers   //:: [Either a b] -> ([a],[b]) 
+})﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
+/// <reference path="../../../base/src/GHC/Unit.js" local />
+/// <reference path="../../../base/src/GHC/Tuple.js" local />
+/// <reference path="../../../base/src/GHC/Ordering.js" local />
+/// <reference path="../../../base/src/GHC/Classes.js" local />
+
+
+
+//{-# OPTIONS_GHC -XNoImplicitPrelude #-}
+//{-# OPTIONS_GHC -fno-warn-unused-imports #-}
+//{-# OPTIONS_GHC -fno-warn-orphans #-}
+//-- XXX -fno-warn-unused-imports needed for the GHC.Tuple import below. Sigh.
+//-----------------------------------------------------------------------------
+//-- |
+//-- Module      :  Data.Tuple
+//-- Copyright   :  (c) The University of Glasgow 2001
+//-- License     :  BSD-style (see the file libraries/base/LICENSE)
+//-- 
+//-- Maintainer  :  libraries@haskell.org
+//-- Stability   :  experimental
+//-- Portability :  portable
+//--
+//-- The tuple data types, and associated functions.
+//--
+//-----------------------------------------------------------------------------
+
+//module Data.Tuple
+//  ( fst         -- :: (a,b) -> a
+//  , snd         -- :: (a,b) -> a
+//  , curry       -- :: ((a, b) -> c) -> a -> b -> c
+//  , uncurry     -- :: (a -> b -> c) -> ((a, b) -> c)
+//#ifdef __NHC__
+//  , (,)(..)
+//  , (,,)(..)
+//  , (,,,)(..)
+//  , (,,,,)(..)
+//  , (,,,,,)(..)
+//  , (,,,,,,)(..)
+//  , (,,,,,,,)(..)
+//  , (,,,,,,,,)(..)
+//  , (,,,,,,,,,)(..)
+//  , (,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,,,,)(..)
+//#endif
+//  )
+//    where
+
+//#ifdef __GLASGOW_HASKELL__
+//import GHC.Bool
+//import GHC.Classes
+//import GHC.Ordering
+//-- XXX The standalone deriving clauses fail with
+//--     The data constructors of `(,)' are not all in scope
+//--       so you cannot derive an instance for it
+//--     In the stand-alone deriving instance for `Eq (a, b)'
+//-- if we don't import GHC.Tuple
+//import GHC.Tuple
+//#endif  /* __GLASGOW_HASKELL__ */
+
+//#ifdef __NHC__
+//import Prelude
+//import Prelude
+//  ( (,)(..)
+//  , (,,)(..)
+//  , (,,,)(..)
+//  , (,,,,)(..)
+//  , (,,,,,)(..)
+//  , (,,,,,,)(..)
+//  , (,,,,,,,)(..)
+//  , (,,,,,,,,)(..)
+//  , (,,,,,,,,,)(..)
+//  , (,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,,,)(..)
+//  , (,,,,,,,,,,,,,,)(..)
+//  -- nhc98's prelude only supplies tuple instances up to size 15
+//  , fst, snd
+//  , curry, uncurry
+//  )
+//#endif
+
+//#ifdef __GLASGOW_HASKELL__
+//import GHC.Unit ()
+//#endif
+
+//default ()              -- Double isn't available yet
+
+//#ifdef __GLASGOW_HASKELL__
+//-- XXX Why aren't these derived?
+//instance Eq () where
+//    () == () = True
+//    () /= () = False
+instance(Eq, Unit, {
+    eq: strictEq,
+    ne: strictNe
+})
+
+//instance Ord () where
+//    () <= () = True
+//    () <  () = False
+//    () >= () = True
+//    () >  () = False
+//    max () () = ()
+//    min () () = ()
+//    compare () () = EQ
+instance(Ord, Unit, {
+    "<=": function(a, b){ return true  },
+    "<" : function(a, b){ return false },
+    ">=": function(a, b){ return true  },
+    ">" : function(a, b){ return false },
+    max : function(a, b){ return unit  },
+    min : function(a, b){ return unit  },
+    compare : function(a, b){ return Ordering.EQ }
+})
+
+//TODO: tuple instances
+
+//#ifndef __HADDOCK__
+//deriving instance (Eq  a, Eq  b) => Eq  (a, b)
+//deriving instance (Ord a, Ord b) => Ord (a, b)
+//deriving instance (Eq  a, Eq  b, Eq  c) => Eq  (a, b, c)
+//deriving instance (Ord a, Ord b, Ord c) => Ord (a, b, c)
+//deriving instance (Eq  a, Eq  b, Eq  c, Eq  d) => Eq  (a, b, c, d)
+//deriving instance (Ord a, Ord b, Ord c, Ord d) => Ord (a, b, c, d)
+//deriving instance (Eq  a, Eq  b, Eq  c, Eq  d, Eq  e) => Eq  (a, b, c, d, e)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e) => Ord (a, b, c, d, e)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f)
+//               => Eq (a, b, c, d, e, f)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f)
+//               => Ord (a, b, c, d, e, f)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g)
+//               => Eq (a, b, c, d, e, f, g)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g)
+//               => Ord (a, b, c, d, e, f, g)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h)
+//               => Eq (a, b, c, d, e, f, g, h)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h)
+//               => Ord (a, b, c, d, e, f, g, h)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h, Eq i)
+//               => Eq (a, b, c, d, e, f, g, h, i)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h, Ord i)
+//               => Ord (a, b, c, d, e, f, g, h, i)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h, Eq i, Eq j)
+//               => Eq (a, b, c, d, e, f, g, h, i, j)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h, Ord i, Ord j)
+//               => Ord (a, b, c, d, e, f, g, h, i, j)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h, Eq i, Eq j, Eq k)
+//               => Eq (a, b, c, d, e, f, g, h, i, j, k)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h, Ord i, Ord j, Ord k)
+//               => Ord (a, b, c, d, e, f, g, h, i, j, k)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h, Eq i, Eq j, Eq k, Eq l)
+//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h, Ord i, Ord j, Ord k, Ord l)
+//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h, Eq i, Eq j, Eq k, Eq l, Eq m)
+//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l, m)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h, Ord i, Ord j, Ord k, Ord l, Ord m)
+//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l, m)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h, Eq i, Eq j, Eq k, Eq l, Eq m, Eq n)
+//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l, m, n)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h, Ord i, Ord j, Ord k, Ord l, Ord m, Ord n)
+//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l, m, n)
+//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
+//                   Eq h, Eq i, Eq j, Eq k, Eq l, Eq m, Eq n, Eq o)
+//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l, m, n, o)
+//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
+//                   Ord h, Ord i, Ord j, Ord k, Ord l, Ord m, Ord n, Ord o)
+//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l, m, n, o)
+//#endif  /* !__HADDOCK__ */
+//#endif  /* __GLASGOW_HASKELL__ */
+
+//-- ---------------------------------------------------------------------------
+//-- Standard functions over tuples
+
+//#if !defined(__HUGS__) && !defined(__NHC__)
+//-- | Extract the first component of a pair.
+//fst                     :: (a,b) -> a
+//fst (x,_)               =  x
+function fst(tuple){
+    return tuple[0];
+}
+
+
+//-- | Extract the second component of a pair.
+//snd                     :: (a,b) -> b
+//snd (_,y)               =  y
+function snd(tuple){
+    return tuple[1];
+}
+
+//-- | 'curry' converts an uncurried function to a curried function.
+//curry                   :: ((a, b) -> c) -> a -> b -> c
+//curry f x y             =  f (x, y)
+
+//TODO: revise naming
+//`curry` is used for making javascript functions receive one or more arguments
+//so this is called `curry_` since it's less frequently used, I think
+function curry_(f){
+    return function(x, y){
+        var t = [x, y];
+        t.constructor = Tuple.Tuple2;
+        return f(t);
+    }
+}
+
+//-- | 'uncurry' converts a curried function to a function on pairs.
+//uncurry                 :: (a -> b -> c) -> ((a, b) -> c)
+//uncurry f p             =  f (fst p) (snd p)
+function uncurry(f){
+    return function(p){
+        return f(p[0], p[1]);
+    }
+}
+//#endif  /* neither __HUGS__ nor __NHC__ */
+
+
+namespace("Data_Tuple", {
+     fst      : fst
+    ,snd      : snd 
+    ,curry_   : curry_
+    ,uncurry  : uncurry
+})﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
 /// <reference path="../../../base/src/GHC/Maybe.js" local />
 
 
@@ -5878,387 +6304,6 @@ namespace("Data_List", {
     ,maximumBy      : maximumBy         
     ,minimumBy      : minimumBy         
 
-})﻿/// <reference path="../../../jshaskell/src/Haskell.js" local />
-/// <reference path="../../../base/src/GHC/Unit.js" local />
-/// <reference path="../../../base/src/GHC/Tuple.js" local />
-/// <reference path="../../../base/src/GHC/Ordering.js" local />
-/// <reference path="../../../base/src/GHC/Classes.js" local />
-
-
-
-//{-# OPTIONS_GHC -XNoImplicitPrelude #-}
-//{-# OPTIONS_GHC -fno-warn-unused-imports #-}
-//{-# OPTIONS_GHC -fno-warn-orphans #-}
-//-- XXX -fno-warn-unused-imports needed for the GHC.Tuple import below. Sigh.
-//-----------------------------------------------------------------------------
-//-- |
-//-- Module      :  Data.Tuple
-//-- Copyright   :  (c) The University of Glasgow 2001
-//-- License     :  BSD-style (see the file libraries/base/LICENSE)
-//-- 
-//-- Maintainer  :  libraries@haskell.org
-//-- Stability   :  experimental
-//-- Portability :  portable
-//--
-//-- The tuple data types, and associated functions.
-//--
-//-----------------------------------------------------------------------------
-
-//module Data.Tuple
-//  ( fst         -- :: (a,b) -> a
-//  , snd         -- :: (a,b) -> a
-//  , curry       -- :: ((a, b) -> c) -> a -> b -> c
-//  , uncurry     -- :: (a -> b -> c) -> ((a, b) -> c)
-//#ifdef __NHC__
-//  , (,)(..)
-//  , (,,)(..)
-//  , (,,,)(..)
-//  , (,,,,)(..)
-//  , (,,,,,)(..)
-//  , (,,,,,,)(..)
-//  , (,,,,,,,)(..)
-//  , (,,,,,,,,)(..)
-//  , (,,,,,,,,,)(..)
-//  , (,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,,,,)(..)
-//#endif
-//  )
-//    where
-
-//#ifdef __GLASGOW_HASKELL__
-//import GHC.Bool
-//import GHC.Classes
-//import GHC.Ordering
-//-- XXX The standalone deriving clauses fail with
-//--     The data constructors of `(,)' are not all in scope
-//--       so you cannot derive an instance for it
-//--     In the stand-alone deriving instance for `Eq (a, b)'
-//-- if we don't import GHC.Tuple
-//import GHC.Tuple
-//#endif  /* __GLASGOW_HASKELL__ */
-
-//#ifdef __NHC__
-//import Prelude
-//import Prelude
-//  ( (,)(..)
-//  , (,,)(..)
-//  , (,,,)(..)
-//  , (,,,,)(..)
-//  , (,,,,,)(..)
-//  , (,,,,,,)(..)
-//  , (,,,,,,,)(..)
-//  , (,,,,,,,,)(..)
-//  , (,,,,,,,,,)(..)
-//  , (,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,,,)(..)
-//  , (,,,,,,,,,,,,,,)(..)
-//  -- nhc98's prelude only supplies tuple instances up to size 15
-//  , fst, snd
-//  , curry, uncurry
-//  )
-//#endif
-
-//#ifdef __GLASGOW_HASKELL__
-//import GHC.Unit ()
-//#endif
-
-//default ()              -- Double isn't available yet
-
-//#ifdef __GLASGOW_HASKELL__
-//-- XXX Why aren't these derived?
-//instance Eq () where
-//    () == () = True
-//    () /= () = False
-instance(Eq, Unit, {
-    eq: strictEq,
-    ne: strictNe
-})
-
-//instance Ord () where
-//    () <= () = True
-//    () <  () = False
-//    () >= () = True
-//    () >  () = False
-//    max () () = ()
-//    min () () = ()
-//    compare () () = EQ
-instance(Ord, Unit, {
-    "<=": function(a, b){ return true  },
-    "<" : function(a, b){ return false },
-    ">=": function(a, b){ return true  },
-    ">" : function(a, b){ return false },
-    max : function(a, b){ return unit  },
-    min : function(a, b){ return unit  },
-    compare : function(a, b){ return Ordering.EQ }
-})
-
-//TODO: tuple instances
-
-//#ifndef __HADDOCK__
-//deriving instance (Eq  a, Eq  b) => Eq  (a, b)
-//deriving instance (Ord a, Ord b) => Ord (a, b)
-//deriving instance (Eq  a, Eq  b, Eq  c) => Eq  (a, b, c)
-//deriving instance (Ord a, Ord b, Ord c) => Ord (a, b, c)
-//deriving instance (Eq  a, Eq  b, Eq  c, Eq  d) => Eq  (a, b, c, d)
-//deriving instance (Ord a, Ord b, Ord c, Ord d) => Ord (a, b, c, d)
-//deriving instance (Eq  a, Eq  b, Eq  c, Eq  d, Eq  e) => Eq  (a, b, c, d, e)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e) => Ord (a, b, c, d, e)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f)
-//               => Eq (a, b, c, d, e, f)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f)
-//               => Ord (a, b, c, d, e, f)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g)
-//               => Eq (a, b, c, d, e, f, g)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g)
-//               => Ord (a, b, c, d, e, f, g)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h)
-//               => Eq (a, b, c, d, e, f, g, h)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h)
-//               => Ord (a, b, c, d, e, f, g, h)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h, Eq i)
-//               => Eq (a, b, c, d, e, f, g, h, i)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h, Ord i)
-//               => Ord (a, b, c, d, e, f, g, h, i)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h, Eq i, Eq j)
-//               => Eq (a, b, c, d, e, f, g, h, i, j)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h, Ord i, Ord j)
-//               => Ord (a, b, c, d, e, f, g, h, i, j)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h, Eq i, Eq j, Eq k)
-//               => Eq (a, b, c, d, e, f, g, h, i, j, k)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h, Ord i, Ord j, Ord k)
-//               => Ord (a, b, c, d, e, f, g, h, i, j, k)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h, Eq i, Eq j, Eq k, Eq l)
-//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h, Ord i, Ord j, Ord k, Ord l)
-//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h, Eq i, Eq j, Eq k, Eq l, Eq m)
-//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l, m)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h, Ord i, Ord j, Ord k, Ord l, Ord m)
-//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l, m)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h, Eq i, Eq j, Eq k, Eq l, Eq m, Eq n)
-//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l, m, n)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h, Ord i, Ord j, Ord k, Ord l, Ord m, Ord n)
-//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l, m, n)
-//deriving instance (Eq a, Eq b, Eq c, Eq d, Eq e, Eq f, Eq g,
-//                   Eq h, Eq i, Eq j, Eq k, Eq l, Eq m, Eq n, Eq o)
-//               => Eq (a, b, c, d, e, f, g, h, i, j, k, l, m, n, o)
-//deriving instance (Ord a, Ord b, Ord c, Ord d, Ord e, Ord f, Ord g,
-//                   Ord h, Ord i, Ord j, Ord k, Ord l, Ord m, Ord n, Ord o)
-//               => Ord (a, b, c, d, e, f, g, h, i, j, k, l, m, n, o)
-//#endif  /* !__HADDOCK__ */
-//#endif  /* __GLASGOW_HASKELL__ */
-
-//-- ---------------------------------------------------------------------------
-//-- Standard functions over tuples
-
-//#if !defined(__HUGS__) && !defined(__NHC__)
-//-- | Extract the first component of a pair.
-//fst                     :: (a,b) -> a
-//fst (x,_)               =  x
-function fst(tuple){
-    return tuple[0];
-}
-
-
-//-- | Extract the second component of a pair.
-//snd                     :: (a,b) -> b
-//snd (_,y)               =  y
-function snd(tuple){
-    return tuple[1];
-}
-
-//-- | 'curry' converts an uncurried function to a curried function.
-//curry                   :: ((a, b) -> c) -> a -> b -> c
-//curry f x y             =  f (x, y)
-
-//TODO: revise naming
-//`curry` is used for making javascript functions receive one or more arguments
-//so this is called `curry_` since it's less frequently used, I think
-function curry_(f){
-    return function(x, y){
-        var t = [x, y];
-        t.constructor = Tuple.Tuple2;
-        return f(t);
-    }
-}
-
-//-- | 'uncurry' converts a curried function to a function on pairs.
-//uncurry                 :: (a -> b -> c) -> ((a, b) -> c)
-//uncurry f p             =  f (fst p) (snd p)
-function uncurry(f){
-    return function(p){
-        return f(p[0], p[1]);
-    }
-}
-//#endif  /* neither __HUGS__ nor __NHC__ */
-
-
-namespace("Data_Tuple", {
-     fst      : fst
-    ,snd      : snd 
-    ,curry_   : curry_
-    ,uncurry  : uncurry
-})﻿/// <reference path="../../../jshaskell/src/Haskell/Main.js" local />
-/// <reference path="../../../jshaskell/src/Haskell/DataType.js" local />
-/// <reference path="../../../base/src/GHC/Base.js" local />
-
-//{-# OPTIONS_GHC -XNoImplicitPrelude #-}
-//-----------------------------------------------------------------------------
-//-- |
-//-- Module      :  Data.Either
-//-- Copyright   :  (c) The University of Glasgow 2001
-//-- License     :  BSD-style (see the file libraries/base/LICENSE)
-//-- 
-//-- Maintainer  :  libraries@haskell.org
-//-- Stability   :  experimental
-//-- Portability :  portable
-//--
-//-- The Either type, and associated operations.
-//--
-//-----------------------------------------------------------------------------
-
-//module Data.Either (
-//   Either(..),
-//   either,           -- :: (a -> c) -> (b -> c) -> Either a b -> c
-//   lefts,            -- :: [Either a b] -> [a]
-//   rights,           -- :: [Either a b] -> [b]
-//   partitionEithers, -- :: [Either a b] -> ([a],[b])
-// ) where
-
-//#include "Typeable.h"
-
-//#ifdef __GLASGOW_HASKELL__
-//import GHC.Base
-//import GHC.Show
-//import GHC.Read
-//#endif
-
-//import Data.Typeable
-
-//#ifdef __GLASGOW_HASKELL__
-//{-
-//-- just for testing
-//import Test.QuickCheck
-//-}
-
-//{-|
-
-//The 'Either' type represents values with two possibilities: a value of
-//type @'Either' a b@ is either @'Left' a@ or @'Right' b@.
-
-//The 'Either' type is sometimes used to represent a value which is
-//either correct or an error; by convention, the 'Left' constructor is
-//used to hold an error value and the 'Right' constructor is used to
-//hold a correct value (mnemonic: \"right\" also means \"correct\").
-//-}
-//data  Either a b  =  Left a | Right b   deriving (Eq, Ord, Read, Show)
-function Either(){}
-data(Either, [["Left", "a"], ["Right", "b"]]);
-
-//-- | Case analysis for the 'Either' type.
-//-- If the value is @'Left' a@, apply the first function to @a@;
-//-- if it is @'Right' b@, apply the second function to @b@.
-//either                  :: (a -> c) -> (b -> c) -> Either a b -> c
-//either f _ (Left x)     =  f x
-//either _ g (Right y)    =  g y
-//#endif  /* __GLASGOW_HASKELL__ */
-function either(f, g, e){
-    return  e.Left  ? f(e[0]) :
-            e.Right ? g(e[0]) :
-            error(either);
-}
-
-//INSTANCE_TYPEABLE2(Either,eitherTc,"Either")
-
-//-- | Extracts from a list of 'Either' all the 'Left' elements
-//-- All the 'Left' elements are extracted in order.
-
-//lefts   :: [Either a b] -> [a]
-//lefts x = [a | Left a <- x]
-function lefts(eithers){
-    var acc = [];
-    for(var i = 0, l = eithers.length; i < l; ++i){
-        var either = eithers[i];
-        if(either.Left)
-            acc.push(either[0]);
-    }
-    return acc;
-}
-
-//-- | Extracts from a list of 'Either' all the 'Right' elements
-//-- All the 'Right' elements are extracted in order.
-
-//rights   :: [Either a b] -> [b]
-//rights x = [a | Right a <- x]
-function rights(eithers){
-    var acc = [];
-    for(var i = 0, l = eithers.length; i < l; ++i){
-        var either = eithers[i];
-        if(either.Right)
-            acc.push(either[0]);
-    }
-    return acc;
-}
-
-//-- | Partitions a list of 'Either' into two lists
-//-- All the 'Left' elements are extracted, in order, to the first
-//-- component of the output.  Similarly the 'Right' elements are extracted
-//-- to the second component of the output.
-
-//partitionEithers :: [Either a b] -> ([a],[b])
-//partitionEithers = foldr (either left right) ([],[])
-// where
-//  left  a (l, r) = (a:l, r)
-//  right a (l, r) = (l, a:r)
-function partitionEithers(eithers){
-    function left(a){
-        return function(t){
-            return [cons(a, t[0]), t[1]];
-        }
-    }
-    function right(a){
-        return function(t){
-            return [t[0], cons(a, t[1])];
-        }
-    }
-
-    return foldr(function(a, b){ return either(left, right, a)(b) }, [[],[]], eithers);
-}
-
-//{-
-//{--------------------------------------------------------------------
-//  Testing
-//--------------------------------------------------------------------}
-//prop_partitionEithers :: [Either Int Int] -> Bool
-//prop_partitionEithers x =
-//  partitionEithers x == (lefts x, rights x)
-//-}
-
-namespace("Data_Either", {
-     Either : Either
-    ,either : either           //:: (a -> c) -> (b -> c) -> Either a b -> c
-    ,lefts  : lefts            //:: [Either a b] -> [a]
-    ,rights : rights           //:: [Either a b] -> [b]
-    ,partitionEithers : partitionEithers   //:: [Either a b] -> ([a],[b]) 
 })﻿/// <reference path="../../../jshaskell/src/Haskell/Main.js" local />
 /// <reference path="../../../base/src/GHC/Base.js" local />
 /// <reference path="../../../base/src/GHC/Unicode.js" local />
@@ -6506,13 +6551,13 @@ namespace("Data_Char", {
 
 })
 }());;(function(){
-;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;var Either = NS['Data_Either'].Either, either = NS['Data_Either'].either, lefts = NS['Data_Either'].lefts, rights = NS['Data_Either'].rights, partitionEithers = NS['Data_Either'].partitionEithers;;var fst = NS['Data_Tuple'].fst, snd = NS['Data_Tuple'].snd, curry_ = NS['Data_Tuple'].curry_, uncurry = NS['Data_Tuple'].uncurry;;var append = NS['Data_List'].append, head = NS['Data_List'].head, last = NS['Data_List'].last, tail = NS['Data_List'].tail, init = NS['Data_List'].init, null_ = NS['Data_List'].null_, length = NS['Data_List'].length, map = NS['Data_List'].map, reverse = NS['Data_List'].reverse, intersperse = NS['Data_List'].intersperse, intercalate = NS['Data_List'].intercalate, transpose = NS['Data_List'].transpose, subsequences = NS['Data_List'].subsequences, permutations = NS['Data_List'].permutations, foldl = NS['Data_List'].foldl, foldl1 = NS['Data_List'].foldl1, foldr = NS['Data_List'].foldr, foldr1 = NS['Data_List'].foldr1, concat = NS['Data_List'].concat, concatMap = NS['Data_List'].concatMap, and = NS['Data_List'].and, or = NS['Data_List'].or, any = NS['Data_List'].any, all = NS['Data_List'].all, sum = NS['Data_List'].sum, product = NS['Data_List'].product, maximum = NS['Data_List'].maximum, minimum = NS['Data_List'].minimum, scanl = NS['Data_List'].scanl, scanl1 = NS['Data_List'].scanl1, scanr = NS['Data_List'].scanr, scanr1 = NS['Data_List'].scanr1, mapAccumL = NS['Data_List'].mapAccumL, mapAccumR = NS['Data_List'].mapAccumR, replicate = NS['Data_List'].replicate, unfoldr = NS['Data_List'].unfoldr, take = NS['Data_List'].take, drop = NS['Data_List'].drop, splitAt = NS['Data_List'].splitAt, takeWhile = NS['Data_List'].takeWhile, dropWhile = NS['Data_List'].dropWhile, span = NS['Data_List'].span, break_ = NS['Data_List'].break_, stripPrefix = NS['Data_List'].stripPrefix, group = NS['Data_List'].group, inits = NS['Data_List'].inits, tails = NS['Data_List'].tails, isPrefixOf = NS['Data_List'].isPrefixOf, isSuffixOf = NS['Data_List'].isSuffixOf, isInfixOf = NS['Data_List'].isInfixOf, elem = NS['Data_List'].elem, notElem = NS['Data_List'].notElem, lookup = NS['Data_List'].lookup, find = NS['Data_List'].find, filter = NS['Data_List'].filter, partition = NS['Data_List'].partition, index = NS['Data_List'].index, elemIndex = NS['Data_List'].elemIndex, elemIndices = NS['Data_List'].elemIndices, findIndex = NS['Data_List'].findIndex, findIndices = NS['Data_List'].findIndices, zip = NS['Data_List'].zip, zip3 = NS['Data_List'].zip3, zip4 = NS['Data_List'].zip4, zip5 = NS['Data_List'].zip5, zip6 = NS['Data_List'].zip6, zip7 = NS['Data_List'].zip7, zipWith = NS['Data_List'].zipWith, zipWith3 = NS['Data_List'].zipWith3, zipWith4 = NS['Data_List'].zipWith4, zipWith5 = NS['Data_List'].zipWith5, zipWith6 = NS['Data_List'].zipWith6, zipWith7 = NS['Data_List'].zipWith7, unzip = NS['Data_List'].unzip, unzip3 = NS['Data_List'].unzip3, unzip4 = NS['Data_List'].unzip4, unzip5 = NS['Data_List'].unzip5, unzip6 = NS['Data_List'].unzip6, unzip7 = NS['Data_List'].unzip7, lines = NS['Data_List'].lines, words = NS['Data_List'].words, unlines = NS['Data_List'].unlines, unwords = NS['Data_List'].unwords, nub = NS['Data_List'].nub, delete_ = NS['Data_List'].delete_, difference = NS['Data_List'].difference, union = NS['Data_List'].union, intersect = NS['Data_List'].intersect, sort = NS['Data_List'].sort, insert = NS['Data_List'].insert, nubBy = NS['Data_List'].nubBy, deleteBy = NS['Data_List'].deleteBy, deleteFirstsBy = NS['Data_List'].deleteFirstsBy, unionBy = NS['Data_List'].unionBy, intersectBy = NS['Data_List'].intersectBy, groupBy = NS['Data_List'].groupBy, sortBy = NS['Data_List'].sortBy, insertBy = NS['Data_List'].insertBy, maximumBy = NS['Data_List'].maximumBy, minimumBy = NS['Data_List'].minimumBy;;var Maybe = NS['Data_Maybe'].Maybe, maybe = NS['Data_Maybe'].maybe, isJust = NS['Data_Maybe'].isJust, isNothing = NS['Data_Maybe'].isNothing, fromJust = NS['Data_Maybe'].fromJust, fromMaybe = NS['Data_Maybe'].fromMaybe, listToMaybe = NS['Data_Maybe'].listToMaybe, maybeToList = NS['Data_Maybe'].maybeToList, catMaybes = NS['Data_Maybe'].catMaybes, mapMaybe = NS['Data_Maybe'].mapMaybe;;var Unit = NS['GHC_Base'].Unit, Tuple = NS['GHC_Base'].Tuple, Bool = NS['GHC_Base'].Bool, Ordering = NS['GHC_Base'].Ordering, Eq = NS['GHC_Base'].Eq, Ord = NS['GHC_Base'].Ord, andOp = NS['GHC_Base'].andOp, orOp = NS['GHC_Base'].orOp, not = NS['GHC_Base'].not, Functor = NS['GHC_Base'].Functor, Monad = NS['GHC_Base'].Monad, emptyListOf = NS['GHC_Base'].emptyListOf, cons = NS['GHC_Base'].cons, consJoin = NS['GHC_Base'].consJoin, uncons = NS['GHC_Base'].uncons, augment = NS['GHC_Base'].augment, map = NS['GHC_Base'].map, foldr = NS['GHC_Base'].foldr, append = NS['GHC_Base'].append, otherwise = NS['GHC_Base'].otherwise, ord = NS['GHC_Base'].ord, chr = NS['GHC_Base'].chr, eqString = NS['GHC_Base'].eqString, minInt = NS['GHC_Base'].minInt, maxInt = NS['GHC_Base'].maxInt, id = NS['GHC_Base'].id, lazy = NS['GHC_Base'].lazy, assert = NS['GHC_Base'].assert, const_ = NS['GHC_Base'].const_, compose1 = NS['GHC_Base'].compose1, compose = NS['GHC_Base'].compose, flip = NS['GHC_Base'].flip, call = NS['GHC_Base'].call, until = NS['GHC_Base'].until, asTypeOf = NS['GHC_Base'].asTypeOf, elemIndex = NS['GHC_Base'].elemIndex, unsafeCompare = NS['GHC_Base'].unsafeCompare, readHex = NS['GHC_Base'].readHex, readOct = NS['GHC_Base'].readOct, round = NS['GHC_Base'].round, toInteger = NS['GHC_Base'].toInteger, fromInteger = NS['GHC_Base'].fromInteger, fromIntegral = NS['GHC_Base'].fromIntegral;;var Show = NS['GHC_Show'].Show;﻿/// <reference path="../../jshaskell/src/Haskell.js" local />
+;var Maybe = NS['Data_Maybe'].Maybe, maybe = NS['Data_Maybe'].maybe, isJust = NS['Data_Maybe'].isJust, isNothing = NS['Data_Maybe'].isNothing, fromJust = NS['Data_Maybe'].fromJust, fromMaybe = NS['Data_Maybe'].fromMaybe, listToMaybe = NS['Data_Maybe'].listToMaybe, maybeToList = NS['Data_Maybe'].maybeToList, catMaybes = NS['Data_Maybe'].catMaybes, mapMaybe = NS['Data_Maybe'].mapMaybe;;var append = NS['Data_List'].append, head = NS['Data_List'].head, last = NS['Data_List'].last, tail = NS['Data_List'].tail, init = NS['Data_List'].init, null_ = NS['Data_List'].null_, length = NS['Data_List'].length, map = NS['Data_List'].map, reverse = NS['Data_List'].reverse, intersperse = NS['Data_List'].intersperse, intercalate = NS['Data_List'].intercalate, transpose = NS['Data_List'].transpose, subsequences = NS['Data_List'].subsequences, permutations = NS['Data_List'].permutations, foldl = NS['Data_List'].foldl, foldl1 = NS['Data_List'].foldl1, foldr = NS['Data_List'].foldr, foldr1 = NS['Data_List'].foldr1, concat = NS['Data_List'].concat, concatMap = NS['Data_List'].concatMap, and = NS['Data_List'].and, or = NS['Data_List'].or, any = NS['Data_List'].any, all = NS['Data_List'].all, sum = NS['Data_List'].sum, product = NS['Data_List'].product, maximum = NS['Data_List'].maximum, minimum = NS['Data_List'].minimum, scanl = NS['Data_List'].scanl, scanl1 = NS['Data_List'].scanl1, scanr = NS['Data_List'].scanr, scanr1 = NS['Data_List'].scanr1, mapAccumL = NS['Data_List'].mapAccumL, mapAccumR = NS['Data_List'].mapAccumR, replicate = NS['Data_List'].replicate, unfoldr = NS['Data_List'].unfoldr, take = NS['Data_List'].take, drop = NS['Data_List'].drop, splitAt = NS['Data_List'].splitAt, takeWhile = NS['Data_List'].takeWhile, dropWhile = NS['Data_List'].dropWhile, span = NS['Data_List'].span, break_ = NS['Data_List'].break_, stripPrefix = NS['Data_List'].stripPrefix, group = NS['Data_List'].group, inits = NS['Data_List'].inits, tails = NS['Data_List'].tails, isPrefixOf = NS['Data_List'].isPrefixOf, isSuffixOf = NS['Data_List'].isSuffixOf, isInfixOf = NS['Data_List'].isInfixOf, elem = NS['Data_List'].elem, notElem = NS['Data_List'].notElem, lookup = NS['Data_List'].lookup, find = NS['Data_List'].find, filter = NS['Data_List'].filter, partition = NS['Data_List'].partition, index = NS['Data_List'].index, elemIndex = NS['Data_List'].elemIndex, elemIndices = NS['Data_List'].elemIndices, findIndex = NS['Data_List'].findIndex, findIndices = NS['Data_List'].findIndices, zip = NS['Data_List'].zip, zip3 = NS['Data_List'].zip3, zip4 = NS['Data_List'].zip4, zip5 = NS['Data_List'].zip5, zip6 = NS['Data_List'].zip6, zip7 = NS['Data_List'].zip7, zipWith = NS['Data_List'].zipWith, zipWith3 = NS['Data_List'].zipWith3, zipWith4 = NS['Data_List'].zipWith4, zipWith5 = NS['Data_List'].zipWith5, zipWith6 = NS['Data_List'].zipWith6, zipWith7 = NS['Data_List'].zipWith7, unzip = NS['Data_List'].unzip, unzip3 = NS['Data_List'].unzip3, unzip4 = NS['Data_List'].unzip4, unzip5 = NS['Data_List'].unzip5, unzip6 = NS['Data_List'].unzip6, unzip7 = NS['Data_List'].unzip7, lines = NS['Data_List'].lines, words = NS['Data_List'].words, unlines = NS['Data_List'].unlines, unwords = NS['Data_List'].unwords, nub = NS['Data_List'].nub, delete_ = NS['Data_List'].delete_, difference = NS['Data_List'].difference, union = NS['Data_List'].union, intersect = NS['Data_List'].intersect, sort = NS['Data_List'].sort, insert = NS['Data_List'].insert, nubBy = NS['Data_List'].nubBy, deleteBy = NS['Data_List'].deleteBy, deleteFirstsBy = NS['Data_List'].deleteFirstsBy, unionBy = NS['Data_List'].unionBy, intersectBy = NS['Data_List'].intersectBy, groupBy = NS['Data_List'].groupBy, sortBy = NS['Data_List'].sortBy, insertBy = NS['Data_List'].insertBy, maximumBy = NS['Data_List'].maximumBy, minimumBy = NS['Data_List'].minimumBy;;var fst = NS['Data_Tuple'].fst, snd = NS['Data_Tuple'].snd, curry_ = NS['Data_Tuple'].curry_, uncurry = NS['Data_Tuple'].uncurry;;var Either = NS['Data_Either'].Either, either = NS['Data_Either'].either, lefts = NS['Data_Either'].lefts, rights = NS['Data_Either'].rights, partitionEithers = NS['Data_Either'].partitionEithers;;var Show = NS['GHC_Show'].Show;;var Unit = NS['GHC_Base'].Unit, Tuple = NS['GHC_Base'].Tuple, Bool = NS['GHC_Base'].Bool, Ordering = NS['GHC_Base'].Ordering, Eq = NS['GHC_Base'].Eq, Ord = NS['GHC_Base'].Ord, andOp = NS['GHC_Base'].andOp, orOp = NS['GHC_Base'].orOp, not = NS['GHC_Base'].not, Functor = NS['GHC_Base'].Functor, Monad = NS['GHC_Base'].Monad, emptyListOf = NS['GHC_Base'].emptyListOf, cons = NS['GHC_Base'].cons, consJoin = NS['GHC_Base'].consJoin, uncons = NS['GHC_Base'].uncons, augment = NS['GHC_Base'].augment, map = NS['GHC_Base'].map, foldr = NS['GHC_Base'].foldr, append = NS['GHC_Base'].append, otherwise = NS['GHC_Base'].otherwise, ord = NS['GHC_Base'].ord, chr = NS['GHC_Base'].chr, eqString = NS['GHC_Base'].eqString, minInt = NS['GHC_Base'].minInt, maxInt = NS['GHC_Base'].maxInt, id = NS['GHC_Base'].id, lazy = NS['GHC_Base'].lazy, assert = NS['GHC_Base'].assert, const_ = NS['GHC_Base'].const_, compose1 = NS['GHC_Base'].compose1, compose = NS['GHC_Base'].compose, flip = NS['GHC_Base'].flip, call = NS['GHC_Base'].call, until = NS['GHC_Base'].until, asTypeOf = NS['GHC_Base'].asTypeOf, elemIndex = NS['GHC_Base'].elemIndex, unsafeCompare = NS['GHC_Base'].unsafeCompare, readHex = NS['GHC_Base'].readHex, readOct = NS['GHC_Base'].readOct, round = NS['GHC_Base'].round, toInteger = NS['GHC_Base'].toInteger, fromInteger = NS['GHC_Base'].fromInteger, fromIntegral = NS['GHC_Base'].fromIntegral;;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, showConstrOf = NS['Haskell'].showConstrOf, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;﻿/// <reference path="../../jshaskell/src/Haskell.js" local />
+/// <reference path="GHC/Base.js" local />
+/// <reference path="GHC/Show.js" local />
 /// <reference path="Data/Either.js" local />
 /// <reference path="Data/Tuple.js" local />
 /// <reference path="Data/List.js" local />
 /// <reference path="Data/Maybe.js" local />
-/// <reference path="GHC/Base.js" local />
-/// <reference path="GHC/Show.js" local />
 
 
 
@@ -6728,6 +6773,7 @@ namespace("Prelude", {
     ,uncons     : uncons
     ,elemIndex      : elemIndex
     ,unsafeCompare  : unsafeCompare
+    ,emptyListOf    : emptyListOf
 
     ,readHex        : readHex
     ,readOct        : readOct
@@ -6976,7 +7022,1774 @@ namespace("Prelude", {
     //,catch_
 });
 }());;(function(){
-;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;var cons = NS['Prelude'].cons, consJoin = NS['Prelude'].consJoin, uncons = NS['Prelude'].uncons, elemIndex = NS['Prelude'].elemIndex, unsafeCompare = NS['Prelude'].unsafeCompare, readHex = NS['Prelude'].readHex, readOct = NS['Prelude'].readOct, round = NS['Prelude'].round, toInteger = NS['Prelude'].toInteger, fromInteger = NS['Prelude'].fromInteger, fromIntegral = NS['Prelude'].fromIntegral, Bool = NS['Prelude'].Bool, andOp = NS['Prelude'].andOp, orOp = NS['Prelude'].orOp, not = NS['Prelude'].not, otherwise = NS['Prelude'].otherwise, Maybe = NS['Prelude'].Maybe, maybe = NS['Prelude'].maybe, Either = NS['Prelude'].Either, either = NS['Prelude'].either, Ordering = NS['Prelude'].Ordering, String = NS['Prelude'].String, fst = NS['Prelude'].fst, snd = NS['Prelude'].snd, curry = NS['Prelude'].curry, curry_ = NS['Prelude'].curry_, uncurry = NS['Prelude'].uncurry, Eq = NS['Prelude'].Eq, Ord = NS['Prelude'].Ord, Monad = NS['Prelude'].Monad, Functor = NS['Prelude'].Functor, id = NS['Prelude'].id, const_ = NS['Prelude'].const_, compose = NS['Prelude'].compose, compose1 = NS['Prelude'].compose1, flip = NS['Prelude'].flip, call = NS['Prelude'].call, until = NS['Prelude'].until, asTypeOf = NS['Prelude'].asTypeOf, error = NS['Prelude'].error, map = NS['Prelude'].map, append = NS['Prelude'].append, filter = NS['Prelude'].filter, head = NS['Prelude'].head, last = NS['Prelude'].last, tail = NS['Prelude'].tail, init = NS['Prelude'].init, null_ = NS['Prelude'].null_, length = NS['Prelude'].length, index = NS['Prelude'].index, reverse = NS['Prelude'].reverse, foldl = NS['Prelude'].foldl, foldl1 = NS['Prelude'].foldl1, foldr = NS['Prelude'].foldr, foldr1 = NS['Prelude'].foldr1, and = NS['Prelude'].and, or = NS['Prelude'].or, any = NS['Prelude'].any, all = NS['Prelude'].all, sum = NS['Prelude'].sum, product = NS['Prelude'].product, concat = NS['Prelude'].concat, concatMap = NS['Prelude'].concatMap, maximum = NS['Prelude'].maximum, minimum = NS['Prelude'].minimum, scanl = NS['Prelude'].scanl, scanl1 = NS['Prelude'].scanl1, scanr = NS['Prelude'].scanr, scanr1 = NS['Prelude'].scanr1, replicate = NS['Prelude'].replicate, take = NS['Prelude'].take, drop = NS['Prelude'].drop, splitAt = NS['Prelude'].splitAt, takeWhile = NS['Prelude'].takeWhile, dropWhile = NS['Prelude'].dropWhile, span = NS['Prelude'].span, break_ = NS['Prelude'].break_, elem = NS['Prelude'].elem, notElem = NS['Prelude'].notElem, lookup = NS['Prelude'].lookup, zip = NS['Prelude'].zip, zip3 = NS['Prelude'].zip3, zipWith = NS['Prelude'].zipWith, zipWith3 = NS['Prelude'].zipWith3, unzip = NS['Prelude'].unzip, unzip3 = NS['Prelude'].unzip3, lines = NS['Prelude'].lines, words = NS['Prelude'].words, unlines = NS['Prelude'].unlines, unwords = NS['Prelude'].unwords, Show = NS['Prelude'].Show;;var String = NS['Data_Char'].String, ord = NS['Data_Char'].ord, chr = NS['Data_Char'].chr, isSpace = NS['Data_Char'].isSpace, isUpper = NS['Data_Char'].isUpper, isLower = NS['Data_Char'].isLower, isAlpha = NS['Data_Char'].isAlpha, isAlphaNum = NS['Data_Char'].isAlphaNum, isDigit = NS['Data_Char'].isDigit, isHexDigit = NS['Data_Char'].isHexDigit, isOctDigit = NS['Data_Char'].isOctDigit, toUpper = NS['Data_Char'].toUpper, toLower = NS['Data_Char'].toLower, toTitle = NS['Data_Char'].toTitle, digitToInt = NS['Data_Char'].digitToInt;;var append = NS['Data_List'].append, head = NS['Data_List'].head, last = NS['Data_List'].last, tail = NS['Data_List'].tail, init = NS['Data_List'].init, null_ = NS['Data_List'].null_, length = NS['Data_List'].length, map = NS['Data_List'].map, reverse = NS['Data_List'].reverse, intersperse = NS['Data_List'].intersperse, intercalate = NS['Data_List'].intercalate, transpose = NS['Data_List'].transpose, subsequences = NS['Data_List'].subsequences, permutations = NS['Data_List'].permutations, foldl = NS['Data_List'].foldl, foldl1 = NS['Data_List'].foldl1, foldr = NS['Data_List'].foldr, foldr1 = NS['Data_List'].foldr1, concat = NS['Data_List'].concat, concatMap = NS['Data_List'].concatMap, and = NS['Data_List'].and, or = NS['Data_List'].or, any = NS['Data_List'].any, all = NS['Data_List'].all, sum = NS['Data_List'].sum, product = NS['Data_List'].product, maximum = NS['Data_List'].maximum, minimum = NS['Data_List'].minimum, scanl = NS['Data_List'].scanl, scanl1 = NS['Data_List'].scanl1, scanr = NS['Data_List'].scanr, scanr1 = NS['Data_List'].scanr1, mapAccumL = NS['Data_List'].mapAccumL, mapAccumR = NS['Data_List'].mapAccumR, replicate = NS['Data_List'].replicate, unfoldr = NS['Data_List'].unfoldr, take = NS['Data_List'].take, drop = NS['Data_List'].drop, splitAt = NS['Data_List'].splitAt, takeWhile = NS['Data_List'].takeWhile, dropWhile = NS['Data_List'].dropWhile, span = NS['Data_List'].span, break_ = NS['Data_List'].break_, stripPrefix = NS['Data_List'].stripPrefix, group = NS['Data_List'].group, inits = NS['Data_List'].inits, tails = NS['Data_List'].tails, isPrefixOf = NS['Data_List'].isPrefixOf, isSuffixOf = NS['Data_List'].isSuffixOf, isInfixOf = NS['Data_List'].isInfixOf, elem = NS['Data_List'].elem, notElem = NS['Data_List'].notElem, lookup = NS['Data_List'].lookup, find = NS['Data_List'].find, filter = NS['Data_List'].filter, partition = NS['Data_List'].partition, index = NS['Data_List'].index, elemIndex = NS['Data_List'].elemIndex, elemIndices = NS['Data_List'].elemIndices, findIndex = NS['Data_List'].findIndex, findIndices = NS['Data_List'].findIndices, zip = NS['Data_List'].zip, zip3 = NS['Data_List'].zip3, zip4 = NS['Data_List'].zip4, zip5 = NS['Data_List'].zip5, zip6 = NS['Data_List'].zip6, zip7 = NS['Data_List'].zip7, zipWith = NS['Data_List'].zipWith, zipWith3 = NS['Data_List'].zipWith3, zipWith4 = NS['Data_List'].zipWith4, zipWith5 = NS['Data_List'].zipWith5, zipWith6 = NS['Data_List'].zipWith6, zipWith7 = NS['Data_List'].zipWith7, unzip = NS['Data_List'].unzip, unzip3 = NS['Data_List'].unzip3, unzip4 = NS['Data_List'].unzip4, unzip5 = NS['Data_List'].unzip5, unzip6 = NS['Data_List'].unzip6, unzip7 = NS['Data_List'].unzip7, lines = NS['Data_List'].lines, words = NS['Data_List'].words, unlines = NS['Data_List'].unlines, unwords = NS['Data_List'].unwords, nub = NS['Data_List'].nub, delete_ = NS['Data_List'].delete_, difference = NS['Data_List'].difference, union = NS['Data_List'].union, intersect = NS['Data_List'].intersect, sort = NS['Data_List'].sort, insert = NS['Data_List'].insert, nubBy = NS['Data_List'].nubBy, deleteBy = NS['Data_List'].deleteBy, deleteFirstsBy = NS['Data_List'].deleteFirstsBy, unionBy = NS['Data_List'].unionBy, intersectBy = NS['Data_List'].intersectBy, groupBy = NS['Data_List'].groupBy, sortBy = NS['Data_List'].sortBy, insertBy = NS['Data_List'].insertBy, maximumBy = NS['Data_List'].maximumBy, minimumBy = NS['Data_List'].minimumBy;/// <reference path="../../../../jshaskell/src/Haskell.js" local />
+;var cons = NS['Prelude'].cons, consJoin = NS['Prelude'].consJoin, uncons = NS['Prelude'].uncons, elemIndex = NS['Prelude'].elemIndex, unsafeCompare = NS['Prelude'].unsafeCompare, emptyListOf = NS['Prelude'].emptyListOf, readHex = NS['Prelude'].readHex, readOct = NS['Prelude'].readOct, round = NS['Prelude'].round, toInteger = NS['Prelude'].toInteger, fromInteger = NS['Prelude'].fromInteger, fromIntegral = NS['Prelude'].fromIntegral, Bool = NS['Prelude'].Bool, andOp = NS['Prelude'].andOp, orOp = NS['Prelude'].orOp, not = NS['Prelude'].not, otherwise = NS['Prelude'].otherwise, Maybe = NS['Prelude'].Maybe, maybe = NS['Prelude'].maybe, Either = NS['Prelude'].Either, either = NS['Prelude'].either, Ordering = NS['Prelude'].Ordering, String = NS['Prelude'].String, fst = NS['Prelude'].fst, snd = NS['Prelude'].snd, curry = NS['Prelude'].curry, curry_ = NS['Prelude'].curry_, uncurry = NS['Prelude'].uncurry, Eq = NS['Prelude'].Eq, Ord = NS['Prelude'].Ord, Monad = NS['Prelude'].Monad, Functor = NS['Prelude'].Functor, id = NS['Prelude'].id, const_ = NS['Prelude'].const_, compose = NS['Prelude'].compose, compose1 = NS['Prelude'].compose1, flip = NS['Prelude'].flip, call = NS['Prelude'].call, until = NS['Prelude'].until, asTypeOf = NS['Prelude'].asTypeOf, error = NS['Prelude'].error, map = NS['Prelude'].map, append = NS['Prelude'].append, filter = NS['Prelude'].filter, head = NS['Prelude'].head, last = NS['Prelude'].last, tail = NS['Prelude'].tail, init = NS['Prelude'].init, null_ = NS['Prelude'].null_, length = NS['Prelude'].length, index = NS['Prelude'].index, reverse = NS['Prelude'].reverse, foldl = NS['Prelude'].foldl, foldl1 = NS['Prelude'].foldl1, foldr = NS['Prelude'].foldr, foldr1 = NS['Prelude'].foldr1, and = NS['Prelude'].and, or = NS['Prelude'].or, any = NS['Prelude'].any, all = NS['Prelude'].all, sum = NS['Prelude'].sum, product = NS['Prelude'].product, concat = NS['Prelude'].concat, concatMap = NS['Prelude'].concatMap, maximum = NS['Prelude'].maximum, minimum = NS['Prelude'].minimum, scanl = NS['Prelude'].scanl, scanl1 = NS['Prelude'].scanl1, scanr = NS['Prelude'].scanr, scanr1 = NS['Prelude'].scanr1, replicate = NS['Prelude'].replicate, take = NS['Prelude'].take, drop = NS['Prelude'].drop, splitAt = NS['Prelude'].splitAt, takeWhile = NS['Prelude'].takeWhile, dropWhile = NS['Prelude'].dropWhile, span = NS['Prelude'].span, break_ = NS['Prelude'].break_, elem = NS['Prelude'].elem, notElem = NS['Prelude'].notElem, lookup = NS['Prelude'].lookup, zip = NS['Prelude'].zip, zip3 = NS['Prelude'].zip3, zipWith = NS['Prelude'].zipWith, zipWith3 = NS['Prelude'].zipWith3, unzip = NS['Prelude'].unzip, unzip3 = NS['Prelude'].unzip3, lines = NS['Prelude'].lines, words = NS['Prelude'].words, unlines = NS['Prelude'].unlines, unwords = NS['Prelude'].unwords, Show = NS['Prelude'].Show;;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, showConstrOf = NS['Haskell'].showConstrOf, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;/// <reference path="../../../../jshaskell/src/Haskell.js" local />
+/// <reference path="../../../../base/src/Prelude.js" local />
+
+/*
+besideOp = (<>)
+besidePlusOp = (<+>)
+$$ = ($$)
+$p$ = ($+$)
+*/
+
+//TODO
+function quot(a, b){
+    return (a / b) >> 0;
+}
+
+//-----------------------------------------------------------------------------
+//-- |
+//-- Module      :  Text.PrettyPrint.HughesPJ
+//-- Copyright   :  (c) The University of Glasgow 2001
+//-- License     :  BSD-style (see the file libraries/base/LICENSE)
+//-- 
+//-- Maintainer  :  libraries@haskell.org
+//-- Stability   :  provisional
+//-- Portability :  portable
+//--
+//-- John Hughes's and Simon Peyton Jones's Pretty Printer Combinators
+//-- 
+//-- Based on /The Design of a Pretty-printing Library/
+//-- in Advanced Functional Programming,
+//-- Johan Jeuring and Erik Meijer (eds), LNCS 925
+//-- <http://www.cs.chalmers.se/~rjmh/Papers/pretty.ps>
+//--
+//-- Heavily modified by Simon Peyton Jones, Dec 96
+//--
+//-----------------------------------------------------------------------------
+
+//{-
+//Version 3.0     28 May 1997
+//  * Cured massive performance bug.  If you write
+
+//        foldl <> empty (map (text.show) [1..10000])
+
+//    you get quadratic behaviour with V2.0.  Why?  For just the same
+//    reason as you get quadratic behaviour with left-associated (++)
+//    chains.
+
+//    This is really bad news.  One thing a pretty-printer abstraction
+//    should certainly guarantee is insensivity to associativity.  It
+//    matters: suddenly GHC's compilation times went up by a factor of
+//    100 when I switched to the new pretty printer.
+
+//    I fixed it with a bit of a hack (because I wanted to get GHC back
+//    on the road).  I added two new constructors to the Doc type, Above
+//    and Beside:
+
+//         <> = Beside
+//         $$ = Above
+
+//    Then, where I need to get to a "TextBeside" or "NilAbove" form I
+//    "force" the Doc to squeeze out these suspended calls to Beside and
+//    Above; but in so doing I re-associate. It's quite simple, but I'm
+//    not satisfied that I've done the best possible job.  I'll send you
+//    the code if you are interested.
+
+//  * Added new exports:
+//        punctuate, hang
+//        int, integer, float, double, rational,
+//        lparen, rparen, lbrack, rbrack, lbrace, rbrace,
+
+//  * fullRender's type signature has changed.  Rather than producing a
+//    string it now takes an extra couple of arguments that tells it how
+//    to glue fragments of output together:
+
+//        fullRender :: Mode
+//                   -> Int                       -- Line length
+//                   -> Float                     -- Ribbons per line
+//                   -> (TextDetails -> a -> a)   -- What to do with text
+//                   -> a                         -- What to do at the end
+//                   -> Doc
+//                   -> a                         -- Result
+
+//    The "fragments" are encapsulated in the TextDetails data type:
+
+//        data TextDetails = Chr  Char
+//                         | Str  String
+//                         | PStr FAST_STRING
+
+//    The Chr and Str constructors are obvious enough.  The PStr
+//    constructor has a packed string (FAST_STRING) inside it.  It's
+//    generated by using the new "ptext" export.
+
+//    An advantage of this new setup is that you can get the renderer to
+//    do output directly (by passing in a function of type (TextDetails
+//    -> IO () -> IO ()), rather than producing a string that you then
+//    print.
+
+
+//Version 2.0     24 April 1997
+//  * Made empty into a left unit for <> as well as a right unit;
+//    it is also now true that
+//        nest k empty = empty
+//    which wasn't true before.
+
+//  * Fixed an obscure bug in sep that occassionally gave very weird behaviour
+
+//  * Added $+$
+
+//  * Corrected and tidied up the laws and invariants
+
+//======================================================================
+//Relative to John's original paper, there are the following new features:
+
+//1.  There's an empty document, "empty".  It's a left and right unit for 
+//    both <> and $$, and anywhere in the argument list for
+//    sep, hcat, hsep, vcat, fcat etc.
+
+//    It is Really Useful in practice.
+
+//2.  There is a paragraph-fill combinator, fsep, that's much like sep,
+//    only it keeps fitting things on one line until it can't fit any more.
+
+//3.  Some random useful extra combinators are provided.  
+//        <+> puts its arguments beside each other with a space between them,
+//            unless either argument is empty in which case it returns the other
+
+
+//        hcat is a list version of <>
+//        hsep is a list version of <+>
+//        vcat is a list version of $$
+
+//        sep (separate) is either like hsep or like vcat, depending on what fits
+
+//        cat  behaves like sep,  but it uses <> for horizontal conposition
+//        fcat behaves like fsep, but it uses <> for horizontal conposition
+
+//        These new ones do the obvious things:
+//                char, semi, comma, colon, space,
+//                parens, brackets, braces, 
+//                quotes, doubleQuotes
+
+//4.  The "above" combinator, $$, now overlaps its two arguments if the
+//    last line of the top argument stops before the first line of the
+//    second begins.
+
+//        For example:  text "hi" $$ nest 5 (text "there")
+//        lays out as
+//                        hi   there
+//        rather than
+//                        hi
+//                             there
+
+//        There are two places this is really useful
+
+//        a) When making labelled blocks, like this:
+//                Left ->   code for left
+//                Right ->  code for right
+//                LongLongLongLabel ->
+//                          code for longlonglonglabel
+//           The block is on the same line as the label if the label is
+//           short, but on the next line otherwise.
+
+//        b) When laying out lists like this:
+//                [ first
+//                , second
+//                , third
+//                ]
+//           which some people like.  But if the list fits on one line
+//           you want [first, second, third].  You can't do this with
+//           John's original combinators, but it's quite easy with the
+//           new $$.
+
+//        The combinator $+$ gives the original "never-overlap" behaviour.
+
+//5.      Several different renderers are provided:
+//                * a standard one
+//                * one that uses cut-marks to avoid deeply-nested documents 
+//                        simply piling up in the right-hand margin
+//                * one that ignores indentation (fewer chars output; good for machines)
+//                * one that ignores indentation and newlines (ditto, only more so)
+
+//6.      Numerous implementation tidy-ups
+//        Use of unboxed data types to speed up the implementation
+//-}
+
+//module Text.PrettyPrint.HughesPJ (
+
+//	-- * The document type
+//        Doc,            -- Abstract
+
+//	-- * Constructing documents
+//	-- ** Converting values into documents
+//        char, text, ptext, zeroWidthText,
+//        int, integer, float, double, rational,
+
+//	-- ** Simple derived documents
+//        semi, comma, colon, space, equals,
+//        lparen, rparen, lbrack, rbrack, lbrace, rbrace,
+
+//	-- ** Wrapping documents in delimiters
+//        parens, brackets, braces, quotes, doubleQuotes,
+
+//	-- ** Combining documents
+//        empty,
+//        (<>), (<+>), hcat, hsep, 
+//        ($$), ($+$), vcat, 
+//        sep, cat, 
+//        fsep, fcat, 
+//	nest,
+//        hang, punctuate,
+//        
+//	-- * Predicates on documents
+//	isEmpty,
+
+//	-- * Rendering documents
+
+//	-- ** Default rendering
+//	render, 
+
+//	-- ** Rendering with a particular style
+//	Style(..),
+//	style,
+//        renderStyle,
+
+//	-- ** General rendering
+//        fullRender,
+//        Mode(..), TextDetails(..),
+
+//  ) where
+
+
+//import Prelude
+
+//infixl 6 <> 
+//infixl 6 <+>
+//infixl 5 $$, $+$
+
+//-- ---------------------------------------------------------------------------
+
+//#region interface
+
+//-- The interface
+
+//-- The primitive Doc values
+
+//isEmpty :: Doc    -> Bool;  -- ^ Returns 'True' if the document is empty
+
+//-- | The empty document, with no height and no width.
+//-- 'empty' is the identity for '<>', '<+>', '$$' and '$+$', and anywhere
+//-- in the argument list for 'sep', 'hcat', 'hsep', 'vcat', 'fcat' etc.
+//empty   :: Doc
+
+//semi	:: Doc;			-- ^ A ';' character
+//comma	:: Doc;			-- ^ A ',' character
+//colon	:: Doc;			-- ^ A ':' character
+//space	:: Doc;			-- ^ A space character
+//equals	:: Doc;			-- ^ A '=' character
+//lparen	:: Doc;			-- ^ A '(' character
+//rparen	:: Doc;			-- ^ A ')' character
+//lbrack	:: Doc;			-- ^ A '[' character
+//rbrack	:: Doc;			-- ^ A ']' character
+//lbrace	:: Doc;			-- ^ A '{' character
+//rbrace	:: Doc;			-- ^ A '}' character
+
+//-- | A document of height and width 1, containing a literal character.
+//char 	 :: Char     -> Doc
+
+//-- | A document of height 1 containing a literal string.
+//-- 'text' satisfies the following laws:
+//--
+//-- * @'text' s '<>' 'text' t = 'text' (s'++'t)@
+//--
+//-- * @'text' \"\" '<>' x = x@, if @x@ non-empty
+//--
+//-- The side condition on the last law is necessary because @'text' \"\"@
+//-- has height 1, while 'empty' has no height.
+//text	 :: String   -> Doc
+
+//-- | An obsolete function, now identical to 'text'.
+//ptext	 :: String   -> Doc
+
+//-- | Some text, but without any width. Use for non-printing text
+//-- such as a HTML or Latex tags
+//zeroWidthText :: String   -> Doc
+
+//int      :: Int      -> Doc;	-- ^ @int n = text (show n)@
+//integer  :: Integer  -> Doc;	-- ^ @integer n = text (show n)@
+//float    :: Float    -> Doc;	-- ^ @float n = text (show n)@
+//double   :: Double   -> Doc;	-- ^ @double n = text (show n)@
+//rational :: Rational -> Doc;	-- ^ @rational n = text (show n)@
+
+//parens       :: Doc -> Doc; 	-- ^ Wrap document in @(...)@
+//brackets     :: Doc -> Doc;  	-- ^ Wrap document in @[...]@
+//braces	     :: Doc -> Doc;   	-- ^ Wrap document in @{...}@
+//quotes	     :: Doc -> Doc;	-- ^ Wrap document in @\'...\'@
+//doubleQuotes :: Doc -> Doc;	-- ^ Wrap document in @\"...\"@
+
+//-- Combining @Doc@ values
+
+//-- | Beside.
+//-- '<>' is associative, with identity 'empty'.
+//(<>)   :: Doc -> Doc -> Doc
+
+//-- | Beside, separated by space, unless one of the arguments is 'empty'.
+//-- '<+>' is associative, with identity 'empty'.
+//(<+>)  :: Doc -> Doc -> Doc
+
+//-- | Above, except that if the last line of the first argument stops
+//-- at least one position before the first line of the second begins,
+//-- these two lines are overlapped.  For example:
+//--
+//-- >    text "hi" $$ nest 5 (text "there")
+//--
+//-- lays out as
+//--
+//-- >    hi   there
+//--
+//-- rather than
+//--
+//-- >    hi
+//-- >         there
+//--
+//-- '$$' is associative, with identity 'empty', and also satisfies
+//--
+//-- * @(x '$$' y) '<>' z = x '$$' (y '<>' z)@, if @y@ non-empty.
+//--
+//($$)   :: Doc -> Doc -> Doc
+
+//-- | Above, with no overlapping.
+//-- '$+$' is associative, with identity 'empty'.
+//($+$)   :: Doc -> Doc -> Doc
+
+//hcat   :: [Doc] -> Doc;          -- ^List version of '<>'.
+//hsep   :: [Doc] -> Doc;          -- ^List version of '<+>'.
+//vcat   :: [Doc] -> Doc;          -- ^List version of '$$'.
+
+//cat    :: [Doc] -> Doc;          -- ^ Either 'hcat' or 'vcat'.
+//sep    :: [Doc] -> Doc;          -- ^ Either 'hsep' or 'vcat'.
+//fcat   :: [Doc] -> Doc;          -- ^ \"Paragraph fill\" version of 'cat'.
+//fsep   :: [Doc] -> Doc;          -- ^ \"Paragraph fill\" version of 'sep'.
+
+//-- | Nest (or indent) a document by a given number of positions
+//-- (which may also be negative).  'nest' satisfies the laws:
+//--
+//-- * @'nest' 0 x = x@
+//--
+//-- * @'nest' k ('nest' k' x) = 'nest' (k+k') x@
+//--
+//-- * @'nest' k (x '<>' y) = 'nest' k z '<>' 'nest' k y@
+//--
+//-- * @'nest' k (x '$$' y) = 'nest' k x '$$' 'nest' k y@
+//--
+//-- * @'nest' k 'empty' = 'empty'@
+//--
+//-- * @x '<>' 'nest' k y = x '<>' y@, if @x@ non-empty
+//--
+//-- The side condition on the last law is needed because
+//-- 'empty' is a left identity for '<>'.
+//nest   :: Int -> Doc -> Doc
+
+//-- GHC-specific ones.
+
+//-- | @hang d1 n d2 = sep [d1, nest n d2]@
+//hang :: Doc -> Int -> Doc -> Doc
+
+//-- | @punctuate p [d1, ... dn] = [d1 \<> p, d2 \<> p, ... dn-1 \<> p, dn]@
+//punctuate :: Doc -> [Doc] -> [Doc]
+
+
+//-- Displaying @Doc@ values. 
+
+
+//-- | Renders the document as a string using the default 'style'.
+//render     :: Doc -> String
+
+//-- | The general rendering interface.
+//fullRender :: Mode			-- ^Rendering mode
+//           -> Int                       -- ^Line length
+//           -> Float                     -- ^Ribbons per line
+//           -> (TextDetails -> a -> a)   -- ^What to do with text
+//           -> a                         -- ^What to do at the end
+//           -> Doc			-- ^The document
+//           -> a                         -- ^Result
+
+//-- | Render the document as a string using a specified style.
+//renderStyle  :: Style -> Doc -> String
+
+//#endregion
+
+
+//-- | Rendering mode.
+//data Mode = PageMode            -- ^Normal 
+//          | ZigZagMode          -- ^With zig-zag cuts
+//          | LeftMode            -- ^No indentation, infinitely long lines
+//          | OneLineMode         -- ^All on one line
+function Mode(){}
+data(Mode, ["PageMode"
+           ,"ZigZagMode"
+           ,"LeftMode"
+           ,"OneLineMode"
+           ])
+var PageMode    = Mode.PageMode;
+var ZigZagMode  = Mode.ZigZagMode;
+var LeftMode    = Mode.LeftMode;
+var OneLineMode = Mode.OneLineMode;
+
+
+//-- | A rendering style.
+//data Style
+// = Style { mode           :: Mode     -- ^ The rendering mode
+// 	       , lineLength     :: Int      -- ^ Length of line, in chars
+//         , ribbonsPerLine :: Float    -- ^ Ratio of ribbon length to line length
+//         }
+function Style(){}
+data(Style, [["Style", {
+     mode           : Mode 
+    ,lineLength     : Number  
+    ,ribbonsPerLine : Number
+}]])
+
+function mode           (dt){ return dt["mode"] }
+function lineLength     (dt){ return dt["lineLength"] }
+function ribbonsPerLine (dt){ return dt["ribbonsPerLine"] }
+
+//-- | The default style (@mode=PageMode, lineLength=100, ribbonsPerLine=1.5@).
+//style :: Style
+//style = Style { lineLength = 100, ribbonsPerLine = 1.5, mode = PageMode }
+var style = Style.Style(record, {
+     mode           : PageMode
+    ,lineLength     : 100  
+    ,ribbonsPerLine : 1.5
+});
+
+//data TextDetails = Chr  Char
+//                 | Str  String
+//                 | PStr String
+function TextDetails(){}
+data(TextDetails, [["Chr", String]
+                  ,["Str", String]
+                  ,["PStr", String]
+                  ])
+var Chr  = TextDetails.Chr;
+var Str  = TextDetails.Str;
+var PStr = TextDetails.PStr;
+
+
+//-- The Doc data type
+
+//-- A Doc represents a *set* of layouts.  A Doc with
+//-- no occurrences of Union or NoDoc represents just one layout.
+
+//-- | The abstract type of documents.
+//-- The 'Show' instance is equivalent to using 'render'.
+//data Doc
+// = Empty                                -- empty
+// | NilAbove Doc                         -- text "" $$ x
+// | TextBeside TextDetails !Int Doc      -- text s <> x  
+// | Nest !Int Doc                        -- nest k x
+// | Union Doc Doc                        -- ul `union` ur
+// | NoDoc                                -- The empty set of documents
+// | Beside Doc Bool Doc                  -- True <=> space between
+// | Above  Doc Bool Doc                  -- True <=> never overlap
+
+//type RDoc = Doc         -- RDoc is a "reduced Doc", guaranteed not to have a top-level Above or Beside
+function Doc(){}
+data(Doc, ["Empty"
+          ,["NilAbove", Doc]
+          ,["TextBeside", TextDetails, Number, Doc]
+          ,["Nest", Number, Doc]
+          ,["Union", Doc, Doc]
+          ,"NoDoc"
+          ,["Beside", Doc, Bool, Doc]
+          ,["Above",  Doc, Bool, Doc]
+          ])
+
+var Empty       = Doc.Empty;
+var NilAbove    = Doc.NilAbove;
+var TextBeside  = Doc.TextBeside;
+var Nest        = Doc.Nest;
+var Union       = Doc.Union;
+var NoDoc       = Doc.NoDoc;
+var Beside      = Doc.Beside;
+var Above       = Doc.Above;
+
+
+//-- ---------------------------------------------------------------------------
+//-- The Doc calculus
+
+//-- The Doc combinators satisfy the following laws:
+
+//{-
+//Laws for $$
+//~~~~~~~~~~~
+//<a1>    (x $$ y) $$ z   = x $$ (y $$ z)
+//<a2>    empty $$ x      = x
+//<a3>    x $$ empty      = x
+
+//        ...ditto $+$...
+
+//Laws for <>
+//~~~~~~~~~~~
+//<b1>    (x <> y) <> z   = x <> (y <> z)
+//<b2>    empty <> x      = empty
+//<b3>    x <> empty      = x
+
+//        ...ditto <+>...
+
+//Laws for text
+//~~~~~~~~~~~~~
+//<t1>    text s <> text t        = text (s++t)
+//<t2>    text "" <> x            = x, if x non-empty
+//  
+//** because of law n6, t2 only holds if x doesn't
+//** start with `nest'.
+//    
+
+//Laws for nest
+//~~~~~~~~~~~~~
+//<n1>    nest 0 x                = x
+//<n2>    nest k (nest k' x)      = nest (k+k') x
+//<n3>    nest k (x <> y)         = nest k z <> nest k y
+//<n4>    nest k (x $$ y)         = nest k x $$ nest k y
+//<n5>    nest k empty            = empty
+//<n6>    x <> nest k y           = x <> y, if x non-empty
+
+//** Note the side condition on <n6>!  It is this that
+//** makes it OK for empty to be a left unit for <>.
+
+//Miscellaneous
+//~~~~~~~~~~~~~
+//<m1>    (text s <> x) $$ y = text s <> ((text "" <> x) $$
+//                                         nest (-length s) y) 
+
+//<m2>    (x $$ y) <> z = x $$ (y <> z)
+//        if y non-empty
+
+
+//Laws for list versions
+//~~~~~~~~~~~~~~~~~~~~~~
+//<l1>    sep (ps++[empty]++qs)   = sep (ps ++ qs)
+//        ...ditto hsep, hcat, vcat, fill...
+
+//<l2>    nest k (sep ps) = sep (map (nest k) ps)
+//        ...ditto hsep, hcat, vcat, fill...
+
+//Laws for oneLiner
+//~~~~~~~~~~~~~~~~~
+//<o1>    oneLiner (nest k p) = nest k (oneLiner p)
+//<o2>    oneLiner (x <> y)   = oneLiner x <> oneLiner y 
+
+//You might think that the following verion of <m1> would
+//be neater:
+
+//<3 NO>  (text s <> x) $$ y = text s <> ((empty <> x)) $$ 
+//                                         nest (-length s) y)
+
+//But it doesn't work, for if x=empty, we would have
+
+//        text s $$ y = text s <> (empty $$ nest (-length s) y)
+//                    = text s <> nest (-length s) y
+//-}
+
+
+//-- lazy list versions
+//hcat = reduceAB . foldr (beside_' False) empty
+function hcat(docs){
+    return reduceAB( foldr(curry(beside__)(false), empty, docs) );
+}
+
+//hsep = reduceAB . foldr (beside_' True)  empty
+function hsep(docs){
+    return reduceAB( foldr(curry(beside__)(true), empty, docs) );
+}
+
+//vcat = reduceAB . foldr (above_' True) empty
+function vcat(docs){
+    return reduceAB( foldr(curry(above__)(true), empty, docs) );
+}
+
+
+//-- ---------------------------------------------------------------------------
+
+//beside_' :: Bool -> Doc -> Doc -> Doc
+//beside_' _ p Empty = p
+//beside_' g p q = Beside p g q
+function beside__(g, p, q){
+    if(q.Empty)
+        return p;
+    return Beside(p, g, q);
+}
+
+//above_' :: Bool -> Doc -> Doc -> Doc
+//above_' _ p Empty = p
+//above_' g p q = Above p g q
+function above__(g, p, q){
+    if(q.Empty)
+        return p;
+    return Above(p, g, q);
+}
+
+//reduceAB :: Doc -> Doc
+//reduceAB (Above Empty _ q) = q
+//reduceAB (Beside Empty _ q) = q
+//reduceAB doc = doc
+function reduceAB(doc){
+    if(doc.Above && doc[0].Empty)
+        return doc[2];
+    if(doc.Beside && doc[0].Empty)
+        return doc[2];
+    return doc
+}
+
+//hang d1 n d2 = sep [d1, nest n d2]
+function hang(d1, n, d2){
+    return sep([d1, nest(n, d2)]);
+}
+
+//punctuate _ []     = []
+//punctuate p (d:ds) = go d ds
+//                   where
+//                     go d' [] = [d']
+//                     go d' (e:es) = (d' <> p) : go e es
+function punctuate(p, ds){
+    if(!ds.length)
+        return emptyListOf(ds);
+    var a = uncons(ds);
+
+    function go(d, ds){
+        if(!ds.length)
+            return cons(d, emptyListOf(ds));
+        var b = uncons(ds);
+        return cons(besideOp(d, p), go(b.head, b.tail));
+    }
+
+    return go(a.head, a.tail);
+}
+
+
+//reduceDoc :: Doc -> RDoc
+//reduceDoc (Beside p g q) = beside p g (reduceDoc q)
+//reduceDoc (Above  p g q) = above  p g (reduceDoc q)
+//reduceDoc p              = p
+function reduceDoc(p){
+    if(p.Beside)
+        return beside(p[0], p[1], reduceDoc(p[2]));
+    if(p.Above)
+        return above(p[0], p[1], reduceDoc(p[2]));
+    return p;
+}
+
+
+//space_text, nl_text :: TextDetails
+
+//space_text = Chr ' '
+var space_text = Chr(' ');
+
+//nl_text    = Chr '\n'
+var nl_text = Chr('\n');
+
+
+//{-
+//  Here are the invariants:
+//  
+//  1) The argument of NilAbove is never Empty. Therefore
+//     a NilAbove occupies at least two lines.
+//  
+//  2) The argument of @TextBeside@ is never @Nest@.
+//  
+//  
+//  3) The layouts of the two arguments of @Union@ both flatten to the same 
+//     string.
+//  
+//  4) The arguments of @Union@ are either @TextBeside@, or @NilAbove@.
+//  
+//  5) A @NoDoc@ may only appear on the first line of the left argument of an 
+//     union. Therefore, the right argument of an union can never be equivalent
+//     to the empty set (@NoDoc@).
+//  
+//  6) An empty document is always represented by @Empty@.  It can't be
+//     hidden inside a @Nest@, or a @Union@ of two @Empty@s.
+//  
+//  7) The first line of every layout in the left argument of @Union@ is
+//     longer than the first line of any layout in the right argument.
+//     (1) ensures that the left argument has a first line.  In view of
+//     (3), this invariant means that the right argument must have at
+//     least two lines.
+//-}
+
+//-- Invariant: Args to the 4 functions below are always RDocs
+//nilAbove_ :: RDoc -> RDoc
+//nilAbove_ p = NilAbove p
+function nilAbove_(p){
+    return NilAbove(p)
+}
+
+//        -- Arg of a TextBeside is always an RDoc
+//textBeside_ :: TextDetails -> Int -> RDoc -> RDoc
+//textBeside_ s sl p = TextBeside s sl p
+function textBeside_(s, sl, p){
+    return TextBeside(s, sl, p);
+}
+
+//nest_ :: Int -> RDoc -> RDoc
+//nest_ k p = Nest k p
+function nest_(k, p){
+    return Nest(k, p);
+}
+
+//union_ :: RDoc -> RDoc -> RDoc
+//union_ p q = Union p q
+function union_(p, q){
+    return Union(p, q);
+}
+
+//-- Notice the difference between
+//-- 	   * NoDoc (no documents)
+//-- 	   * Empty (one empty document; no height and no width)
+//-- 	   * text "" (a document containing the empty string;
+//-- 		      one line high, but has no width)
+
+
+//-- ---------------------------------------------------------------------------
+//-- @empty@, @text@, @nest@, @union@
+
+//empty = Empty
+var empty = Empty;
+
+//isEmpty Empty = True
+//isEmpty _     = False
+function isEmpty(doc){
+    return !!doc.Empty;
+}
+
+//char  c = textBeside_ (Chr c) 1 Empty
+function char_(c){
+    return textBeside_(Chr(c), 1, Empty);
+}
+
+//TODO
+//text  s = case length s of {sl -> textBeside_ (Str s)  sl Empty}
+function text(s){
+    return textBeside_(Str(s), s.length, Empty);
+}
+
+//ptext s = case length s of {sl -> textBeside_ (PStr s) sl Empty}
+function ptext(s){
+    return textBeside_(PStr(s), s.length, Empty);
+}
+
+//zeroWidthText s = textBeside_ (Str s) 0 Empty
+function zeroWidthText(s){
+    return textBeside_(Str(s), 0, Empty);
+}
+
+//-- ---------------------------------------------------------------------------
+//-- Simple derived definitions
+
+//semi  = char ';'
+var semi = char_(";");
+
+//colon = char ':'
+var colon = char_(":");
+
+//comma = char ','
+var comma = char_(",");
+
+//space = char ' '
+var space = char_(" ");
+
+//equals = char '='
+var equals = char_("=");
+
+//lparen = char '('
+var lparen = char_("(");
+
+//rparen = char ')'
+var rparen = char_(")");
+
+//lbrack = char '['
+var lbrack = char_("[");
+
+//rbrack = char ']'
+var rbrack = char_("]");
+
+//lbrace = char '{'
+var lbrace = char_("{");
+
+//rbrace = char '}'
+var rbrace = char_("}");
+
+function textShow(n){
+    return text(Show.show(n));
+}
+//TODO
+var int_, integer, float_, double_, rational;
+int_ = integer = float_ = double_ = rational = textShow;
+
+//int      n = text (show n)
+//integer  n = text (show n)
+//float    n = text (show n)
+//double   n = text (show n)
+//rational n = text (show n)
+
+//-- SIGBJORN wrote instead:
+//-- rational n = text (show (fromRationalX n))
+
+function wrap(l, t){
+    return function(p){
+        return besideOp( besideOp( char_(l), p ), char_(t) );
+    }
+}
+
+//quotes p        = char '\'' <> p <> char '\''
+var quotes        = wrap("'", "'");
+
+//doubleQuotes p  = char '"' <> p <> char '"'
+var doubleQuotes  = wrap('"', '"');
+
+//parens p        = char '(' <> p <> char ')'
+var parens        = wrap('(', ')');
+
+//brackets p      = char '[' <> p <> char ']'
+var brackets      = wrap('[', ']');
+
+//braces p        = char '{' <> p <> char '}'
+var braces        = wrap('{', '}');
+
+
+
+//nest k  p = mkNest k (reduceDoc p)        -- Externally callable version
+function nest(k, p){
+    return mkNest(k, reduceDoc(p));
+}
+
+//-- mkNest checks for Nest's invariant that it doesn't have an Empty inside it
+//mkNest :: Int -> Doc -> Doc
+//mkNest k       _           | k `seq` False = undefined
+//mkNest k       (Nest k1 p) = mkNest (k + k1) p
+//mkNest _       NoDoc       = NoDoc
+//mkNest _       Empty       = Empty
+//mkNest 0       p           = p                  -- Worth a try!
+//mkNest k       p           = nest_ k p
+function mkNest(k, p){
+    return  p.Nest  ? mkNest(k + p[0], p[1]) :
+            p.NoDoc ? NoDoc :
+            p.Empty ? Empty :
+            k === 0 ? p :
+                      nest_(k, p);
+}
+
+//-- mkUnion checks for an empty document
+//mkUnion :: Doc -> Doc -> Doc
+//mkUnion Empty _ = Empty
+//mkUnion p q     = p `union_` q
+function mkUnion(p, q){
+    return p.Empty ? Empty : union_(p, q);
+}
+
+
+//-- ---------------------------------------------------------------------------
+//-- Vertical composition @$$@
+
+//above_ :: Doc -> Bool -> Doc -> Doc
+//above_ p _ Empty = p
+//above_ Empty _ q = q
+//above_ p g q = Above p g q
+function above_(p, g, q){
+    return  q.Empty ? p :
+            p.Empty ? q :
+            Above(p, g, q);
+}
+
+//p $$  q = above_ p False q
+function $$(p, q){
+    return above_(p, false, q);
+}
+
+//p $+$ q = above_ p True q
+function $p$(p, q){
+    return above_(p, true, q);
+}
+
+//above :: Doc -> Bool -> RDoc -> RDoc
+//above (Above p g1 q1)  g2 q2 = above p g1 (above q1 g2 q2)
+//above p@(Beside _ _ _) g  q  = aboveNest (reduceDoc p) g 0 (reduceDoc q)
+//above p g q                  = aboveNest p             g 0 (reduceDoc q)
+function above(p, g, q){
+    return  p.Above  ? above(p[0], p[1], above(p[2], g, q)) :
+            p.Besdie ? aboveNest(reduceDoc(p), g, 0, reduceDoc(q)) :
+                       aboveNest(p,            g, 0, reduceDoc(q)) ;
+}
+
+//aboveNest :: RDoc -> Bool -> Int -> RDoc -> RDoc
+//-- Specfication: aboveNest p g k q = p $g$ (nest k q)
+
+//aboveNest _                   _ k _ | k `seq` False = undefined
+//aboveNest NoDoc               _ _ _ = NoDoc
+//aboveNest (p1 `Union` p2)     g k q = aboveNest p1 g k q `union_` 
+//                                      aboveNest p2 g k q
+//                                
+//aboveNest Empty               _ k q = mkNest k q
+//aboveNest (Nest k1 p)         g k q = nest_ k1 (aboveNest p g (k - k1) q)
+//                                  -- p can't be Empty, so no need for mkNest
+//                                
+//aboveNest (NilAbove p)        g k q = nilAbove_ (aboveNest p g k q)
+//aboveNest (TextBeside s sl p) g k q = k1 `seq` textBeside_ s sl rest
+//                                    where
+//                                      k1   = k - sl
+//                                      rest = case p of
+//                                                Empty -> nilAboveNest g k1 q
+//                                                _     -> aboveNest  p g k1 q
+//aboveNest (Above {})          _ _ _ = error "aboveNest Above"
+//aboveNest (Beside {})         _ _ _ = error "aboveNest Beside"
+function aboveNest(doc, g, k, q){
+    return  doc.NoDoc      ? NoDoc :
+            doc.Union      ? union_(aboveNest(doc[0], g, k, q),
+                                    aboveNest(doc[1], g, k, q)) :
+            doc.Empty      ? mkNest(k, q) :
+            doc.Nest       ? nest_(k1, aboveNest(doc[1], g, k - doc[0], q)) :
+            doc.NilAbove   ? nilAbove_(aboveNest(doc[0], g, k, q)) :
+            doc.TextBeside ? textBeside_(doc[0],
+                                         doc[1],
+                                         doc[2].Empty ?
+                                             nilAboveNest(     g, k - doc[1], q) :
+                                             aboveNest(doc[2], g, k - doc[1], q) ) :
+                             
+            doc.Above      ? error("aboveNest Above") :
+            doc.Beside     ? error("aboveNest Beside") :
+            error();
+}
+
+
+//nilAboveNest :: Bool -> Int -> RDoc -> RDoc
+//-- Specification: text s <> nilaboveNest g k q 
+//--              = text s <> (text "" $g$ nest k q)
+
+//nilAboveNest _ k _           | k `seq` False = undefined
+//nilAboveNest _ _ Empty       = Empty    -- Here's why the "text s <>" is in the spec!
+//nilAboveNest g k (Nest k1 q) = nilAboveNest g (k + k1) q
+
+//nilAboveNest g k q           | (not g) && (k > 0)        -- No newline if no overlap
+//                             = textBeside_ (Str (spaces k)) k q
+//                             | otherwise                        -- Put them really above
+//                             = nilAbove_ (mkNest k q)
+function nilAboveNest(g, k, q){
+    return  q.Empty         ? Empty :
+            q.Nest          ? nilAboveNest(g, k + q[0], q[1]) :
+            (!g) && (k > 0) ? textBeside_(Str(spaces(k)), k, q) :
+                              nilAbove_(mkNest(k, q));
+}
+
+//-- ---------------------------------------------------------------------------
+//-- Horizontal composition @<>@
+
+//beside_ :: Doc -> Bool -> Doc -> Doc
+//beside_ p _ Empty = p
+//beside_ Empty _ q = q
+//beside_ p g q = Beside p g q
+function beside_(p, g, q){
+    return q.Empty ? p : p.Empty ? q : Beside(p, g, q);
+}
+
+//p <>  q = beside_ p False q
+function besideOp(p, q){
+    return beside_(p, false, q);
+}
+
+//p <+> q = beside_ p True  q
+function besidePlusOp(p, q){
+    return beside_(p, true, q);
+}
+
+//beside :: Doc -> Bool -> RDoc -> RDoc
+//-- Specification: beside g p q = p <g> q
+// 
+//beside NoDoc               _ _   = NoDoc
+//beside (p1 `Union` p2)     g q   = (beside p1 g q) `union_` (beside p2 g q)
+//beside Empty               _ q   = q
+//beside (Nest k p)          g q   = nest_ k (beside p g q)       -- p non-empty
+//beside p@(Beside p1 g1 q1) g2 q2 
+//           {- (A `op1` B) `op2` C == A `op1` (B `op2` C)  iff op1 == op2 
+//                                                 [ && (op1 == <> || op1 == <+>) ] -}
+//         | g1 == g2              = beside p1 g1 (beside q1 g2 q2)
+//         | otherwise             = beside (reduceDoc p) g2 q2
+//beside p@(Above _ _ _)     g q   = beside (reduceDoc p) g q
+//beside (NilAbove p)        g q   = nilAbove_ (beside p g q)
+//beside (TextBeside s sl p) g q   = textBeside_ s sl rest
+//                               where
+//                                  rest = case p of
+//                                           Empty -> nilBeside g q
+//                                           _     -> beside p g q
+function beside(p, g, q){
+    return  p.NoDoc      ? NoDoc :
+            p.Union      ? union_(beside(p[0], g, q), beside(p[1], g, q)) :
+            p.Empty      ? q :
+            p.Nest       ? nest_(p[0], beside(p[1], g, q)) :
+            p.Beside     ? (p[1] == g) ?
+                                beside(p[0], p[1], beside(p[2], g, q)) : 
+                                beside(reduceDoc(p), g, q) :
+            p.Above      ? beside(reduceDoc(p), g, q) :
+            p.NilAbove   ? nilAbove_(beside(p[0], g, q)) :
+            p.TextBeside ? textBeside_(p[0],
+                                       p[1],
+                                       p[2].Empty ? nilBeside(g, q) :
+                                                    beside(p[2], g, q)) :
+            error();
+
+}
+
+
+//nilBeside :: Bool -> RDoc -> RDoc
+//-- Specification: text "" <> nilBeside g p 
+//--              = text "" <g> p
+
+//nilBeside _ Empty      = Empty  -- Hence the text "" in the spec
+//nilBeside g (Nest _ p) = nilBeside g p
+//nilBeside g p          | g         = textBeside_ space_text 1 p
+//                       | otherwise = p
+function nilBeside(g, p){
+    return  p.Empty ? Empty :
+            p.Nest  ? nilBeside(g, p[1]) :
+            g ? textBeside_(space_text, 1, p) : p;
+}
+
+//-- ---------------------------------------------------------------------------
+//-- Separate, @sep@, Hughes version
+
+//-- Specification: sep ps  = oneLiner (hsep ps)
+//--                         `union`
+//--                          vcat ps
+
+//sep = sepX True         -- Separate with spaces
+function sep(ps){
+    return sepX(true, ps);
+}
+
+//cat = sepX False        -- Don't
+function cat(ps){
+    return sepX(false, ps);
+}
+
+//sepX :: Bool -> [Doc] -> Doc
+//sepX _ []     = empty
+//sepX x (p:ps) = sep1 x (reduceDoc p) 0 ps
+function sepX(x, ps){
+    if(!ps.length)
+        return empty;
+    var a = uncons(ps);
+    return sep1(x, reduceDoc(a.head), 0, a.tail);
+}
+
+
+//-- Specification: sep1 g k ys = sep (x : map (nest k) ys)
+//--                            = oneLiner (x <g> nest k (hsep ys))
+//--                              `union` x $$ nest k (vcat ys)
+
+//sep1 :: Bool -> RDoc -> Int -> [Doc] -> RDoc
+//sep1 _ _                   k _  | k `seq` False = undefined
+//sep1 _ NoDoc               _ _  = NoDoc
+//sep1 g (p `Union` q)       k ys = sep1 g p k ys
+//                                  `union_`
+//                                  (aboveNest q False k (reduceDoc (vcat ys)))
+
+//sep1 g Empty               k ys = mkNest k (sepX g ys)
+//sep1 g (Nest n p)          k ys = nest_ n (sep1 g p (k - n) ys)
+
+//sep1 _ (NilAbove p)        k ys = nilAbove_ (aboveNest p False k (reduceDoc (vcat ys)))
+//sep1 g (TextBeside s sl p) k ys = textBeside_ s sl (sepNB g p (k - sl) ys)
+//sep1 _ (Above {})          _ _  = error "sep1 Above"
+//sep1 _ (Beside {})         _ _  = error "sep1 Beside"
+function sep1(g, doc, k, ys){
+    return  doc.NoDoc      ? NoDoc :
+            doc.Union      ? union_(sep1(g, doc[0], doc[1], ys),
+                                    aboveNest(doc[1], False, k, reduceDoc(vcat(ys))) ) :
+            doc.Empty      ? mkNest(k, sepX(g, ys)) :
+            doc.Nest       ? nest_(doc[0], sep1(g, doc[1], k - doc[0], ys)) :
+            doc.NilAbove   ? nilAbove_(aboveNest(doc[0], False, k, reduceDoc(vcat(ys)))) :
+            doc.TextBeside ? textBeside_(doc[0], doc[1], sepNB(g, doc[2], k - doc[1], ys)) :
+            doc.Above      ? error("sep1 Above") :
+            doc.Beside     ? error("sep1 Beside") :
+            error();
+}
+
+//-- Specification: sepNB p k ys = sep1 (text "" <> p) k ys
+//-- Called when we have already found some text in the first item
+//-- We have to eat up nests
+
+//sepNB :: Bool -> Doc -> Int -> [Doc] -> Doc
+
+//sepNB g (Nest _ p)  k ys  = sepNB g p k ys -- Never triggered, because of invariant (2)
+
+//sepNB g Empty k ys        = oneLiner (nilBeside g (reduceDoc rest))
+//                                `mkUnion` 
+//                            nilAboveNest True k (reduceDoc (vcat ys))
+//                          where
+//                            rest | g         = hsep ys
+//                                 | otherwise = hcat ys
+
+//sepNB g p k ys            = sep1 g p k ys
+function sepNB(g, p, k, ys){
+    return  p.Nest  ? sepNB(g, p[1], k, ys) :
+            p.Empty ? mkUnion(oneLiner(nilBeside(g, reduceDoc(g ? hsep(ys) : hcat(ys))))
+                             ,nilAboveNest(true, k, reduceDoc(vcat(ys)))
+                             )
+            : error();
+}
+
+//-- ---------------------------------------------------------------------------
+//-- @fill@
+
+//fsep = fill True
+function fsep(ps){
+    return fill(true, ps);
+}
+
+//fcat = fill False
+function fcat(ps){
+    return fill(false, ps);
+}
+
+//-- Specification:
+//--
+//-- fill g docs = fillIndent 0 docs
+//--
+//-- fillIndent k [] = []
+//-- fillIndent k [p] = p
+//-- fillIndent k (p1:p2:ps) =
+//--    oneLiner p1 <g> fillIndent (k + length p1 + g ? 1 : 0) (remove_nests (oneLiner p2) : ps)
+//--     `Union`
+//--    (p1 $*$ nest (-k) (fillIndent 0 ps))
+//--
+//-- $*$ is defined for layouts (not Docs) as
+//-- layout1 $*$ layout2 | hasMoreThanOneLine layout1 = layout1 $$ layout2
+//--                     | otherwise                  = layout1 $+$ layout2
+
+//fill :: Bool -> [Doc] -> RDoc
+//fill _ []     = empty
+//fill g (p:ps) = fill1 g (reduceDoc p) 0 ps
+function fill(g, ps){
+    if(!ps.length)
+        return empty;
+    var a = uncons(ps);
+    return fill1(g, reduceDoc(a.head), 0, a.tail);
+}
+
+
+//fill1 :: Bool -> RDoc -> Int -> [Doc] -> Doc
+//fill1 _ _                   k _  | k `seq` False = undefined
+//fill1 _ NoDoc               _ _  = NoDoc
+//fill1 g (p `Union` q)       k ys = fill1 g p k ys
+//                                   `union_`
+//                                   (aboveNest q False k (fill g ys))
+
+//fill1 g Empty               k ys = mkNest k (fill g ys)
+//fill1 g (Nest n p)          k ys = nest_ n (fill1 g p (k - n) ys)
+
+//fill1 g (NilAbove p)        k ys = nilAbove_ (aboveNest p False k (fill g ys))
+//fill1 g (TextBeside s sl p) k ys = textBeside_ s sl (fillNB g p (k - sl) ys)
+//fill1 _ (Above {})          _ _  = error "fill1 Above"
+//fill1 _ (Beside {})         _ _  = error "fill1 Beside"
+function fill1(g, doc, k, ys){
+    return  doc.NoDoc      ? NoDoc :
+            doc.Union      ? union_(fill1(g, doc[0], k, ys)
+                                   ,aboveNest(doc[1], false, k, fill(g, ys))
+                                   ) :
+            doc.Empty      ? mkNest(k, fill(g, ys)) :
+            doc.Nest       ? nest_(doc[0], (fill1(g, doc[1], k - doc[0], ys))) :
+            doc.NilAbove   ? nilAbove_(aboveNest(doc[0], false, k, fill(g, ys))) :
+            doc.TextBeside ? textBeside_(doc[0], doc[1], fillNB(g, doc[2], k - doc[1], ys)) :
+            doc.Above      ? error("fill1 Above") :
+            doc.Beside     ? error("fill1 Beside") :
+            error();
+}
+
+//fillNB :: Bool -> Doc -> Int -> [Doc] -> Doc
+//fillNB _ _           k _  | k `seq` False = undefined
+//fillNB g (Nest _ p)  k ys  = fillNB g p k ys -- Never triggered, because of invariant (2)
+//fillNB _ Empty _ []        = Empty
+//fillNB g Empty k (Empty:ys)  = fillNB g Empty k ys
+//fillNB g Empty k (y:ys)    = fillNBE g k y ys
+//fillNB g p k ys            = fill1 g p k ys
+function fillNB(g, p, k, ys){
+    if(p.Nest)
+        return fillNB(g, p[1], k, ys);
+    if(p.Empty){
+        if(!ys.length)
+            return Empty;
+        var a = uncons(ys);
+        if(a.head.Empty)
+            return fillNB(g, Empty, k, a.tail);
+        return fillNBE(g, k, a.head, a.tail);
+    }
+    return fill1(g, p, k, ys);
+}
+
+//fillNBE :: Bool -> Int -> Doc -> [Doc] -> Doc
+//fillNBE g k y ys           = nilBeside g (fill1 g ((elideNest . oneLiner . reduceDoc) y) k1 ys)
+//                             `mkUnion` 
+//                             nilAboveNest True k (fill g (y:ys))
+//                           where
+//                             k1 | g         = k - 1
+//                                | otherwise = k
+function fillNBE(g, k, y, ys){
+    var k1 = g ? k - 1 : k;
+    return mkUnion(nilBeside(g, fill1(g, elideNest(oneLiner(reduceDoc(y))), k1, ys))
+                  ,nilAboveNest(true, k, fill(g, cons(y, ys)))
+                  );
+}
+
+//elideNest :: Doc -> Doc
+//elideNest (Nest _ d) = d
+//elideNest d = d
+function elideNest(d){
+    return d.Nest ? d[1] : d;
+}
+
+//-- ---------------------------------------------------------------------------
+//-- Selecting the best layout
+
+//best :: Mode
+//     -> Int             -- Line length
+//     -> Int             -- Ribbon length
+//     -> RDoc
+//     -> RDoc            -- No unions in here!
+
+//best OneLineMode _ _ p0
+//  = get p0 -- unused, due to the use of easy_display in full_render
+//  where
+//    get Empty               = Empty
+//    get NoDoc               = NoDoc
+//    get (NilAbove p)        = nilAbove_ (get p)
+//    get (TextBeside s sl p) = textBeside_ s sl (get p)
+//    get (Nest _ p)          = get p             -- Elide nest
+//    get (p `Union` q)       = first (get p) (get q)
+//    get (Above {})          = error "best OneLineMode get Above"
+//    get (Beside {})         = error "best OneLineMode get Beside"
+
+//best _ w0 r p0
+//  = get w0 p0
+//  where
+//    get :: Int          -- (Remaining) width of line
+//        -> Doc -> Doc
+//    get w _ | w==0 && False   = undefined
+//    get _ Empty               = Empty
+//    get _ NoDoc               = NoDoc
+//    get w (NilAbove p)        = nilAbove_ (get w p)
+//    get w (TextBeside s sl p) = textBeside_ s sl (get1 w sl p)
+//    get w (Nest k p)          = nest_ k (get (w - k) p)
+//    get w (p `Union` q)       = nicest w r (get w p) (get w q)
+//    get _ (Above {})          = error "best get Above"
+//    get _ (Beside {})         = error "best get Beside"
+
+//    get1 :: Int         -- (Remaining) width of line
+//         -> Int         -- Amount of first line already eaten up
+//         -> Doc         -- This is an argument to TextBeside => eat Nests
+//         -> Doc         -- No unions in here!
+
+//    get1 w _ _ | w==0 && False = undefined
+//    get1 _ _  Empty               = Empty
+//    get1 _ _  NoDoc               = NoDoc
+//    get1 w sl (NilAbove p)        = nilAbove_ (get (w - sl) p)
+//    get1 w sl (TextBeside t tl p) = textBeside_ t tl (get1 w (sl + tl) p)
+//    get1 w sl (Nest _ p)          = get1 w sl p
+//    get1 w sl (p `Union` q)       = nicest1 w r sl (get1 w sl p) 
+//                                                   (get1 w sl q)
+//    get1 _ _  (Above {})          = error "best get1 Above"
+//    get1 _ _  (Beside {})         = error "best get1 Beside"
+function best(mode, w0, r, p0){
+    function get0(doc){
+        return  doc.Empty       ? Empty :
+                doc.NoDoc       ? NoDoc :
+                doc.NilAbove    ? nilAbove_(get0(doc[0])) :
+                doc.TextBeside  ? textBeside_(doc[0], doc[1], get0(doc[2])) :
+                doc.Nest        ? get0(doc[1]) :              //-- Elide nest
+                doc.Union       ? first(get0(doc[0]), get0(doc[1])) :
+                doc.Above       ? error("best OneLineMode get Above") :
+                doc.Beside      ? error("best OneLineMode get Beside") :
+                error();
+    }
+
+    function get(w, doc){
+        return  (w==0 && false) ? undef :
+                doc.Empty       ? Empty :
+                doc.NoDoc       ? NoDoc :
+                doc.NilAbove    ? nilAbove_(get(w, doc[0])) :
+                doc.TextBeside  ? textBeside_(doc[0], doc[1], get1(w, doc[1], doc[2])) :
+                doc.Nest        ? nest_(doc[0], get(w - doc[0], doc[1])) :
+                doc.Union       ? nicest(w, r, get(w, doc[0]), get(w, doc[1])) :
+                doc.Above       ? error("best get Above"):
+                doc.Beside      ? error("best get Beside"):
+                error();
+    }
+
+    function get1(w, sl, doc){
+        return  (w==0 && false) ? undef :
+                doc.Empty       ? Empty :
+                doc.NoDoc       ? NoDoc :
+                doc.NilAbove    ? nilAbove_(get(w - sl, doc[0])) :
+                doc.TextBeside  ? textBeside_(doc[0], doc[1], get1(w, sl + doc[1], doc[2])) :
+                doc.Nest        ? get1(w, sl, doc[1]) :
+                doc.Union       ? nicest1(w, r, sl, get1(w, sl, doc[0]), get1(w, sl, doc[1])) :
+                doc.Above       ? error("best get1 Above") :
+                doc.Beside      ? error("best get1 Beside") :
+                error();         
+    }
+    
+    return mode.OneLineMode ? get0(p0) : get(w0, p0);
+}
+
+//nicest :: Int -> Int -> Doc -> Doc -> Doc
+//nicest w r p q = nicest1 w r 0 p q
+function nicest(w, r, p, q){
+    return nicest1(w, r, 0, p, q);
+}
+
+//nicest1 :: Int -> Int -> Int -> Doc -> Doc -> Doc
+//nicest1 w r sl p q | fits ((w `minn` r) - sl) p = p
+//                   | otherwise                   = q
+function nicest1(w, r, sl, p, q){
+    return fits(minn(wr, r) - sl, p) ? p : q;
+}
+
+//fits :: Int     -- Space available
+//     -> Doc
+//     -> Bool    -- True if *first line* of Doc fits in space available
+// 
+//fits n _    | n < 0 = False
+//fits _ NoDoc               = False
+//fits _ Empty               = True
+//fits _ (NilAbove _)        = True
+//fits n (TextBeside _ sl p) = fits (n - sl) p
+//fits _ (Above {})          = error "fits Above"
+//fits _ (Beside {})         = error "fits Beside"
+//fits _ (Union {})          = error "fits Union"
+//fits _ (Nest {})           = error "fits Nest"
+function fits(n, doc){
+    return  n < 0          ? false :
+            doc.NoDoc      ? false :
+            doc.Empty      ? true :
+            doc.NilAbove   ? true :
+            doc.TextBeside ? fits(n - doc[1], doc[2]) :
+            doc.Above      ? error("fits Above") :
+            doc.Beside     ? error("fits Beside") :
+            doc.Union      ? error("fits Union") :
+            doc.Nest       ? error("fits Nest") :
+            error();
+}
+
+//minn :: Int -> Int -> Int
+//minn x y | x < y    = x
+//         | otherwise = y
+function minn(x, y){
+    return x < y ? x : y;
+}
+
+//-- @first@ and @nonEmptySet@ are similar to @nicest@ and @fits@, only simpler.
+//-- @first@ returns its first argument if it is non-empty, otherwise its second.
+
+//first :: Doc -> Doc -> Doc
+//first p q | nonEmptySet p = p -- unused, because (get OneLineMode) is unused
+//          | otherwise     = q
+function first(p, q){
+    return nonEmptySet(p) ? p : q;
+}
+
+//nonEmptySet :: Doc -> Bool
+//nonEmptySet NoDoc           = False
+//nonEmptySet (_ `Union` _)      = True
+//nonEmptySet Empty              = True
+//nonEmptySet (NilAbove _)       = True           -- NoDoc always in first line
+//nonEmptySet (TextBeside _ _ p) = nonEmptySet p
+//nonEmptySet (Nest _ p)         = nonEmptySet p
+//nonEmptySet (Above {})         = error "nonEmptySet Above"
+//nonEmptySet (Beside {})        = error "nonEmptySet Beside"
+function nonEmptySet(doc){
+    return  doc.NoDoc      ? false :
+            doc.Union      ? true :
+            doc.Empty      ? true :
+            doc.NilAbove   ? true :
+            doc.TextBeside ? nonEmptySet(doc[2]) :
+            doc.Nest       ? nonEmptySet(doc[1]) :
+            doc.Above      ? error("nonEmptySet Above") :
+            doc.Beside     ? error("nonEmptySet Beside") :
+            error();
+}
+
+//-- @oneLiner@ returns the one-line members of the given set of @Doc@s.
+
+//oneLiner :: Doc -> Doc
+//oneLiner NoDoc               = NoDoc
+//oneLiner Empty               = Empty
+//oneLiner (NilAbove _)        = NoDoc
+//oneLiner (TextBeside s sl p) = textBeside_ s sl (oneLiner p)
+//oneLiner (Nest k p)          = nest_ k (oneLiner p)
+//oneLiner (p `Union` _)       = oneLiner p
+//oneLiner (Above {})          = error "oneLiner Above"
+//oneLiner (Beside {})         = error "oneLiner Beside"
+function oneLiner(doc){
+    return  doc.NoDoc      ? NoDoc :
+            doc.Empty      ? Empty :
+            doc.NilAbove   ? NoDoc :
+            doc.TextBeside ? textBeside_(doc[0], doc[1], oneLiner(doc[2])) :
+            doc.Nest       ? nest_(doc[0], oneLiner(doc[1])) :
+            doc.Union      ? oneLiner(doc[0]) :
+            doc.Above      ? error("oneLiner Above") :
+            doc.Beside     ? error("oneLiner Beside") :
+            error();
+
+}
+
+
+//-- ---------------------------------------------------------------------------
+//-- Displaying the best layout
+
+//renderStyle the_style doc
+//  = fullRender (mode the_style)
+//               (lineLength the_style)
+//               (ribbonsPerLine the_style)
+//	       string_txt
+//	       ""
+//	       doc
+function renderStyle(the_style, doc){
+    return fullRender(mode(the_style), lineLength(the_style), ribbonsPerLine(the_style), string_txt, "", doc);
+}
+
+//render doc       = showDoc doc ""
+function render(doc){
+    return showDoc(doc, "");
+}
+
+//showDoc :: Doc -> String -> String
+//showDoc doc rest = fullRender PageMode 100 1.5 string_txt rest doc
+function showDoc(doc, rest){
+    return fullRender(PageMode, 100, 1.5, string_txt, rest, doc);
+}
+
+//string_txt :: TextDetails -> String -> String
+//string_txt (Chr c)   s  = c:s
+//string_txt (Str s1)  s2 = s1 ++ s2
+//string_txt (PStr s1) s2 = s1 ++ s2
+function string_txt(txtDtl, s){
+    return  txtDtl.Chr ?   cons(txtDtl[0], s) :
+            txtDtl.Str  ? append(txtDtl[0], s) :
+            txtDtl.PStr ? append(txtDtl[0], s) :
+            error();
+}
+
+
+//fullRender OneLineMode _ _ txt end doc = easy_display space_text txt end (reduceDoc doc)
+//fullRender LeftMode    _ _ txt end doc = easy_display nl_text    txt end (reduceDoc doc)
+
+//fullRender the_mode line_length ribbons_per_line txt end doc
+//  = display the_mode line_length ribbon_length txt end best_doc
+//  where 
+//    best_doc = best the_mode hacked_line_length ribbon_length (reduceDoc doc)
+
+//    hacked_line_length, ribbon_length :: Int
+//    ribbon_length = round (fromIntegral line_length / ribbons_per_line)
+//    hacked_line_length = case the_mode of
+//                         ZigZagMode -> maxBound
+//                         _ -> line_length
+function fullRender(the_mode, line_length, ribbons_per_line, txt, end, doc){
+    var ribbon_length = round(fromIntegral(line_length) / ribbons_per_line);
+    //var maxBound = getInstance(Bounded, Number).maxBound; //TODO
+    var maxBound = Number.MAX_VALUE;
+    var hacked_line_length = the_mode.ZigZagMode ? maxBound : line_length;
+    var best_doc = best(the_mode, hacked_line_length, ribbon_length, reduceDoc(doc));
+
+    return display(the_mode, line_length, ribbon_length, txt, end, best_doc);
+}
+
+//display :: Mode -> Int -> Int -> (TextDetails -> a -> a) -> a -> Doc -> a
+//display the_mode page_width ribbon_width txt end doc
+//  = case page_width - ribbon_width of { gap_width ->
+//    case gap_width `quot` 2 of { shift ->
+//    let
+//        lay k _            | k `seq` False = undefined
+//        lay k (Nest k1 p)  = lay (k + k1) p
+//        lay _ Empty        = end
+//        lay _ (Above {})   = error "display lay Above"
+//        lay _ (Beside {})  = error "display lay Beside"
+//        lay _ NoDoc        = error "display lay NoDoc"
+//        lay _ (Union {})   = error "display lay Union"
+//    
+//        lay k (NilAbove p) = nl_text `txt` lay k p
+//    
+//        lay k (TextBeside s sl p)
+//            = case the_mode of
+//                    ZigZagMode |  k >= gap_width
+//                               -> nl_text `txt` (
+//                                  Str (multi_ch shift '/') `txt` (
+//                                  nl_text `txt` (
+//                                  lay1 (k - shift) s sl p)))
+
+//                               |  k < 0
+//                               -> nl_text `txt` (
+//                                  Str (multi_ch shift '\\') `txt` (
+//                                  nl_text `txt` (
+//                                  lay1 (k + shift) s sl p )))
+
+//                    _ -> lay1 k s sl p
+//    
+//        lay1 k _ sl _ | k+sl `seq` False = undefined
+//        lay1 k s sl p = Str (indent k) `txt` (s `txt` lay2 (k + sl) p)
+//    
+//        lay2 k _ | k `seq` False = undefined
+//        lay2 k (NilAbove p)        = nl_text `txt` lay k p
+//        lay2 k (TextBeside s sl p) = s `txt` (lay2 (k + sl) p)
+//        lay2 k (Nest _ p)          = lay2 k p
+//        lay2 _ Empty               = end
+//        lay2 _ (Above {})          = error "display lay2 Above"
+//        lay2 _ (Beside {})         = error "display lay2 Beside"
+//        lay2 _ NoDoc               = error "display lay2 NoDoc"
+//        lay2 _ (Union {})          = error "display lay2 Union"
+//    in
+//    lay 0 doc
+//    }}
+function display(the_mode, page_width, ribbon_width, txt, end, doc){
+    var gap_width = page_width - ribbon_width;
+    var shift = quot(gap_width, 2);
+
+    function lay(k, doc){
+        return  doc.Nest       ? lay(k + doc[0], doc[1]) :
+                doc.Empty      ? end :
+                doc.Above      ? error("display lay Above") :
+                doc.Beside     ? error("display lay Beside") :
+                doc.NoDoc      ? error("display lay NoDoc") :
+                doc.Union      ? error("display lay Union") :
+                doc.NilAbove   ? txt(nl_text, lay(k, doc[0])) :
+                doc.TextBeside ? the_mode.ZigZagMode ? (
+                    k >= gap_width ? 
+                        txt(nl_text
+                           ,txt(Str(multi_ch(shift, '/'))
+                               ,txt(nl_text
+                                   ,lay1(k - shift, doc[0], doc[1], doc[2])
+                                   )
+                               )
+                           )
+                    : k < 0 ?
+                        txt(nl_text
+                           ,txt(Str(multi_ch(shift, '\\'))
+                               ,txt(nl_text
+                                   ,lay1(k + shift, doc[0], doc[1], doc[2])
+                                   )
+                               )
+                           )
+                    : error()
+                ) : lay1(k, doc[0], doc[1], doc[2]) :
+                error();
+    }
+
+    function lay1(k, s, sl, p){
+        return txt(Str(indent(k)), txt(s, lay2(k + sl, p)));
+    }
+
+    function lay2(k, doc){
+        return  doc.NilAbove   ? txt(nl_text, lay(k, doc[0])) :
+                doc.TextBeside ? txt(doc[0], lay2(k + doc[1], doc[2])) :
+                doc.Nest       ? lay2(k, doc[1]) :
+                doc.Empty      ? end :
+                doc.Above      ? error("display lay2 Above") :
+                doc.Beside     ? error("display lay2 Beside") :
+                doc.NoDoc      ? error("display lay2 NoDoc") :
+                doc.Union      ? error("display lay2 Union") :
+                error();
+    }
+
+    return lay(0, doc);
+}
+
+//cant_fail :: a
+//cant_fail = error "easy_display: NoDoc"
+var cant_fail = eta(error, "easy_display: NoDoc");
+
+//easy_display :: TextDetails -> (TextDetails -> a -> a) -> a -> Doc -> a
+//easy_display nl_space_text txt end doc 
+//  = lay doc cant_fail
+//  where
+//    lay NoDoc               no_doc = no_doc
+//    lay (Union _p q)        _      = {- lay p -} (lay q cant_fail)              -- Second arg can't be NoDoc
+//    lay (Nest _ p)          no_doc = lay p no_doc
+//    lay Empty               _      = end
+//    lay (NilAbove p)        _      = nl_space_text `txt` lay p cant_fail      -- NoDoc always on first line
+//    lay (TextBeside s _ p)  no_doc = s `txt` lay p no_doc
+//    lay (Above {}) _ = error "easy_display Above"
+//    lay (Beside {}) _ = error "easy_display Beside"
+function easy_display(nl_space_text, txt, end, doc){
+    function lay(doc, no_doc){
+        return  doc.NoDoc      ? no_doc :
+                doc.Union      ? lay(doc[1], cant_fail) :                      //-- Second arg can't be NoDoc
+                doc.Nest       ? lay(doc[1], no_doc) :
+                doc.Empty      ? end :
+                doc.NilAbove   ? txt(nl_space_text, lay(doc[0], cant_fail)) :  //-- NoDoc always on first line
+                doc.TextBeside ? txt(doc[0], lay(doc[2], no_doc)) :
+                doc.Above      ? error("easy_display Above") :
+                doc.Beside     ? error("easy_display Beside") : 
+                error();
+    }
+
+    return lay(doc, cant_fail);
+} 
+
+
+//-- OLD version: we shouldn't rely on tabs being 8 columns apart in the output.
+//-- indent n | n >= 8 = '\t' : indent (n - 8)
+//--          | otherwise      = spaces n
+//indent :: Int -> String
+//indent n = spaces n
+function indent(n){
+    return spaces(n);
+}
+
+//multi_ch :: Int -> Char -> String
+//multi_ch 0 _ = ""
+//multi_ch n       ch = ch : multi_ch (n - 1) ch
+function multi_ch(n, ch){
+    if(n === 0)
+        return "";
+    return cons(ch, multi_ch(n - 1, ch));
+}
+
+//-- (spaces n) generates a list of n spaces
+//--
+//-- returns the empty string on negative argument.
+//--
+//spaces :: Int -> String
+//spaces n
+// {-
+// | n  < 0    = trace "Warning: negative indentation" ""
+// -}
+// | n <= 0    = ""
+// | otherwise = ' ' : spaces (n - 1)
+function spaces(n){
+    //if(n < 0) return trace("Warning: negative indentation", "");
+    return n <= 0 ? "" : cons(' ', spaces (n - 1));
+}
+
+
+//{-
+//Q: What is the reason for negative indentation (i.e. argument to indent
+//   is < 0) ?
+
+//A:
+//This indicates an error in the library client's code.
+//If we compose a <> b, and the first line of b is more indented than some
+//other lines of b, the law <n6> (<> eats nests) may cause the pretty
+//printer to produce an invalid layout:
+
+//doc       |0123345
+//------------------
+//d1        |a...|
+//d2        |...b|
+//          |c...|
+
+//d1<>d2    |ab..|
+//         c|....|
+
+//Consider a <> b, let `s' be the length of the last line of `a', `k' the
+//indentation of the first line of b, and `k0' the indentation of the
+//left-most line b_i of b.
+
+//The produced layout will have negative indentation if `k - k0 > s', as
+//the first line of b will be put on the (s+1)th column, effectively
+//translating b horizontally by (k-s). Now if the i^th line of b has an
+//indentation k0 < (k-s), it is translated out-of-page, causing
+//`negative indentation'.
+//-}
+
+
+//instance Show Doc where
+//  showsPrec _ doc cont = showDoc doc cont
+instance(Show, Doc, {
+    show : render
+})
+
+extend(operators, {
+    "<>"  : {func   : besideOp
+            ,fixity : infixl(6)
+            },
+    "<+>" : {func   : besidePlusOp
+            ,fixity : infixl(6)
+            },
+    "$$"  : {func   : $$
+            ,fixity : infixl(5)
+            },
+    "$+$" : {func   : $p$
+            ,fixity : infixl(5)
+            }
+})
+
+
+namespace("Text_PrettyPrint_HughesPJ", {
+TextDetails : TextDetails,
+    //-- * The document type
+     Doc            : Doc            //-- Abstract
+
+    //-- * Constructing documents
+    //-- ** Converting values into documents
+    ,char_          : char_
+    ,text           : text
+    ,ptext          : ptext
+    ,zeroWidthText  : zeroWidthText
+    ,int_           : int_
+    ,integer        : integer
+    ,float_         : float_
+    ,double_        : double_
+    ,rational       : rational
+
+    //-- ** Simple derived documents
+    ,semi           : semi  
+    ,comma          : comma
+    ,colon          : colon
+    ,space          : space
+    ,equals         : equals
+    ,lparen         : lparen
+    ,rparen         : rparen
+    ,lbrack         : lbrack
+    ,rbrack         : rbrack
+    ,lbrace         : lbrace
+    ,rbrace         : rbrace
+
+    //-- ** Wrapping documents in delimiters
+    ,parens         : parens
+    ,brackets       : brackets
+    ,braces         : braces
+    ,quotes         : quotes
+    ,doubleQuotes   : doubleQuotes
+
+    //-- ** Combining documents
+    ,empty          : empty
+    //TODO
+    //, (<>)
+    //, (<+>)
+    ,hcat           : hcat
+    ,hsep           : hsep
+    //,($$)
+    //,($+$)
+    ,vcat           : vcat     
+    ,sep            : sep
+    ,cat            : cat
+    ,fsep           : fsep
+    ,fcat           : fcat
+    ,nest           : nest
+    ,hang           : hang
+    ,punctuate      : punctuate
+      
+    //-- * Predicates on documents
+    ,isEmpty        : isEmpty
+
+    //-- * Rendering documents
+
+    //-- ** Default rendering
+    ,render         : render
+
+    //-- ** Rendering with a particular style
+    ,Style          : Style
+    ,style          : style
+    ,renderStyle    : renderStyle
+
+    //-- ** General rendering
+    ,fullRender     : fullRender
+    ,Mode           : Mode
+    ,TextDetails    : TextDetails
+
+})
+
+
+}());;(function(){
+;var cons = NS['Prelude'].cons, consJoin = NS['Prelude'].consJoin, uncons = NS['Prelude'].uncons, elemIndex = NS['Prelude'].elemIndex, unsafeCompare = NS['Prelude'].unsafeCompare, emptyListOf = NS['Prelude'].emptyListOf, readHex = NS['Prelude'].readHex, readOct = NS['Prelude'].readOct, round = NS['Prelude'].round, toInteger = NS['Prelude'].toInteger, fromInteger = NS['Prelude'].fromInteger, fromIntegral = NS['Prelude'].fromIntegral, Bool = NS['Prelude'].Bool, andOp = NS['Prelude'].andOp, orOp = NS['Prelude'].orOp, not = NS['Prelude'].not, otherwise = NS['Prelude'].otherwise, Maybe = NS['Prelude'].Maybe, maybe = NS['Prelude'].maybe, Either = NS['Prelude'].Either, either = NS['Prelude'].either, Ordering = NS['Prelude'].Ordering, String = NS['Prelude'].String, fst = NS['Prelude'].fst, snd = NS['Prelude'].snd, curry = NS['Prelude'].curry, curry_ = NS['Prelude'].curry_, uncurry = NS['Prelude'].uncurry, Eq = NS['Prelude'].Eq, Ord = NS['Prelude'].Ord, Monad = NS['Prelude'].Monad, Functor = NS['Prelude'].Functor, id = NS['Prelude'].id, const_ = NS['Prelude'].const_, compose = NS['Prelude'].compose, compose1 = NS['Prelude'].compose1, flip = NS['Prelude'].flip, call = NS['Prelude'].call, until = NS['Prelude'].until, asTypeOf = NS['Prelude'].asTypeOf, error = NS['Prelude'].error, map = NS['Prelude'].map, append = NS['Prelude'].append, filter = NS['Prelude'].filter, head = NS['Prelude'].head, last = NS['Prelude'].last, tail = NS['Prelude'].tail, init = NS['Prelude'].init, null_ = NS['Prelude'].null_, length = NS['Prelude'].length, index = NS['Prelude'].index, reverse = NS['Prelude'].reverse, foldl = NS['Prelude'].foldl, foldl1 = NS['Prelude'].foldl1, foldr = NS['Prelude'].foldr, foldr1 = NS['Prelude'].foldr1, and = NS['Prelude'].and, or = NS['Prelude'].or, any = NS['Prelude'].any, all = NS['Prelude'].all, sum = NS['Prelude'].sum, product = NS['Prelude'].product, concat = NS['Prelude'].concat, concatMap = NS['Prelude'].concatMap, maximum = NS['Prelude'].maximum, minimum = NS['Prelude'].minimum, scanl = NS['Prelude'].scanl, scanl1 = NS['Prelude'].scanl1, scanr = NS['Prelude'].scanr, scanr1 = NS['Prelude'].scanr1, replicate = NS['Prelude'].replicate, take = NS['Prelude'].take, drop = NS['Prelude'].drop, splitAt = NS['Prelude'].splitAt, takeWhile = NS['Prelude'].takeWhile, dropWhile = NS['Prelude'].dropWhile, span = NS['Prelude'].span, break_ = NS['Prelude'].break_, elem = NS['Prelude'].elem, notElem = NS['Prelude'].notElem, lookup = NS['Prelude'].lookup, zip = NS['Prelude'].zip, zip3 = NS['Prelude'].zip3, zipWith = NS['Prelude'].zipWith, zipWith3 = NS['Prelude'].zipWith3, unzip = NS['Prelude'].unzip, unzip3 = NS['Prelude'].unzip3, lines = NS['Prelude'].lines, words = NS['Prelude'].words, unlines = NS['Prelude'].unlines, unwords = NS['Prelude'].unwords, Show = NS['Prelude'].Show;;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, showConstrOf = NS['Haskell'].showConstrOf, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;var String = NS['Data_Char'].String, ord = NS['Data_Char'].ord, chr = NS['Data_Char'].chr, isSpace = NS['Data_Char'].isSpace, isUpper = NS['Data_Char'].isUpper, isLower = NS['Data_Char'].isLower, isAlpha = NS['Data_Char'].isAlpha, isAlphaNum = NS['Data_Char'].isAlphaNum, isDigit = NS['Data_Char'].isDigit, isHexDigit = NS['Data_Char'].isHexDigit, isOctDigit = NS['Data_Char'].isOctDigit, toUpper = NS['Data_Char'].toUpper, toLower = NS['Data_Char'].toLower, toTitle = NS['Data_Char'].toTitle, digitToInt = NS['Data_Char'].digitToInt;;var append = NS['Data_List'].append, head = NS['Data_List'].head, last = NS['Data_List'].last, tail = NS['Data_List'].tail, init = NS['Data_List'].init, null_ = NS['Data_List'].null_, length = NS['Data_List'].length, map = NS['Data_List'].map, reverse = NS['Data_List'].reverse, intersperse = NS['Data_List'].intersperse, intercalate = NS['Data_List'].intercalate, transpose = NS['Data_List'].transpose, subsequences = NS['Data_List'].subsequences, permutations = NS['Data_List'].permutations, foldl = NS['Data_List'].foldl, foldl1 = NS['Data_List'].foldl1, foldr = NS['Data_List'].foldr, foldr1 = NS['Data_List'].foldr1, concat = NS['Data_List'].concat, concatMap = NS['Data_List'].concatMap, and = NS['Data_List'].and, or = NS['Data_List'].or, any = NS['Data_List'].any, all = NS['Data_List'].all, sum = NS['Data_List'].sum, product = NS['Data_List'].product, maximum = NS['Data_List'].maximum, minimum = NS['Data_List'].minimum, scanl = NS['Data_List'].scanl, scanl1 = NS['Data_List'].scanl1, scanr = NS['Data_List'].scanr, scanr1 = NS['Data_List'].scanr1, mapAccumL = NS['Data_List'].mapAccumL, mapAccumR = NS['Data_List'].mapAccumR, replicate = NS['Data_List'].replicate, unfoldr = NS['Data_List'].unfoldr, take = NS['Data_List'].take, drop = NS['Data_List'].drop, splitAt = NS['Data_List'].splitAt, takeWhile = NS['Data_List'].takeWhile, dropWhile = NS['Data_List'].dropWhile, span = NS['Data_List'].span, break_ = NS['Data_List'].break_, stripPrefix = NS['Data_List'].stripPrefix, group = NS['Data_List'].group, inits = NS['Data_List'].inits, tails = NS['Data_List'].tails, isPrefixOf = NS['Data_List'].isPrefixOf, isSuffixOf = NS['Data_List'].isSuffixOf, isInfixOf = NS['Data_List'].isInfixOf, elem = NS['Data_List'].elem, notElem = NS['Data_List'].notElem, lookup = NS['Data_List'].lookup, find = NS['Data_List'].find, filter = NS['Data_List'].filter, partition = NS['Data_List'].partition, index = NS['Data_List'].index, elemIndex = NS['Data_List'].elemIndex, elemIndices = NS['Data_List'].elemIndices, findIndex = NS['Data_List'].findIndex, findIndices = NS['Data_List'].findIndices, zip = NS['Data_List'].zip, zip3 = NS['Data_List'].zip3, zip4 = NS['Data_List'].zip4, zip5 = NS['Data_List'].zip5, zip6 = NS['Data_List'].zip6, zip7 = NS['Data_List'].zip7, zipWith = NS['Data_List'].zipWith, zipWith3 = NS['Data_List'].zipWith3, zipWith4 = NS['Data_List'].zipWith4, zipWith5 = NS['Data_List'].zipWith5, zipWith6 = NS['Data_List'].zipWith6, zipWith7 = NS['Data_List'].zipWith7, unzip = NS['Data_List'].unzip, unzip3 = NS['Data_List'].unzip3, unzip4 = NS['Data_List'].unzip4, unzip5 = NS['Data_List'].unzip5, unzip6 = NS['Data_List'].unzip6, unzip7 = NS['Data_List'].unzip7, lines = NS['Data_List'].lines, words = NS['Data_List'].words, unlines = NS['Data_List'].unlines, unwords = NS['Data_List'].unwords, nub = NS['Data_List'].nub, delete_ = NS['Data_List'].delete_, difference = NS['Data_List'].difference, union = NS['Data_List'].union, intersect = NS['Data_List'].intersect, sort = NS['Data_List'].sort, insert = NS['Data_List'].insert, nubBy = NS['Data_List'].nubBy, deleteBy = NS['Data_List'].deleteBy, deleteFirstsBy = NS['Data_List'].deleteFirstsBy, unionBy = NS['Data_List'].unionBy, intersectBy = NS['Data_List'].intersectBy, groupBy = NS['Data_List'].groupBy, sortBy = NS['Data_List'].sortBy, insertBy = NS['Data_List'].insertBy, maximumBy = NS['Data_List'].maximumBy, minimumBy = NS['Data_List'].minimumBy;/// <reference path="../../../../jshaskell/src/Haskell.js" local />
 /// <reference path="../../../../base/src/Prelude.js" local />
 
 // -------------------------------------------------
@@ -7845,7 +9658,192 @@ namespace("Text_Parsec_Prim", {
     withScope       : withScope,
     ex              : ex
 });
+/// <reference path="../../../../base/src/Data/Char.js" local />
 /// <reference path="Prim.js" />
+
+
+// -------------------------------------------------
+// Char
+// -------------------------------------------------
+
+
+//-- Commonly used character parsers.
+
+//module Text.Parsec.Char where
+//
+//import Data.Char
+//import Text.Parsec.Pos
+//import Text.Parsec.Prim
+
+// | @oneOf cs@ succeeds if the current character is in the supplied
+// list of characters @cs@. Returns the parsed character. See also
+// 'satisfy'.
+// 
+// >   vowel  = oneOf "aeiou"
+
+//oneOf :: (Stream s m Char) => [Char] -> ParsecT s u m Char
+//oneOf cs            = satisfy (\c -> elem c cs)
+
+var oneOf = function(cs){
+	return label(satisfy(function(c){ return elem(c, cs) }), "oneOf(" + cs + ")");
+};
+
+// | As the dual of 'oneOf', @noneOf cs@ succeeds if the current
+// character /not/ in the supplied list of characters @cs@. Returns the
+// parsed character.
+//
+// >  consonant = noneOf "aeiou"
+
+//noneOf :: (Stream s m Char) => [Char] -> ParsecT s u m Char
+//noneOf cs           = satisfy (\c -> not (elem c cs))
+
+var noneOf = function(cs){
+	return label(satisfy(function(c){ return !elem(c, cs) }), "noneOf(" + cs + ")");
+};
+
+
+// | Parses a white space character (any character which satisfies 'isSpace')
+// Returns the parsed character. 
+
+//space :: (Stream s m Char) => ParsecT s u m Char
+//space               = satisfy isSpace       <?> "space"
+
+var space = exs(satisfy, isSpace ,"<?>", "space");
+
+
+// | Skips /zero/ or more white space characters. See also 'skipMany'.
+
+//spaces :: (Stream s m Char) => ParsecT s u m ()
+//spaces              = skipMany space        <?> "white space"
+
+var spaces = exs(skipMany, space ,"<?>", "white space");
+
+
+// | Parses a newline character (\'\\n\'). Returns a newline character. 
+
+//newline :: (Stream s m Char) => ParsecT s u m Char
+//newline             = char '\n'             <?> "new-line"
+
+var newline = exs(char_, '\n' ,"<?>", "new-line");
+
+// | Parses a tab character (\'\\t\'). Returns a tab character. 
+
+//tab :: (Stream s m Char) => ParsecT s u m Char
+//tab                 = char '\t'             <?> "tab"
+
+var tab = exs(char_, '\t' ,"<?>", "tab");
+
+// | Parses an upper case letter (a character between \'A\' and \'Z\').
+// Returns the parsed character. 
+
+//upper :: (Stream s m Char) => ParsecT s u m Char
+//upper               = satisfy isUpper       <?> "uppercase letter"
+
+var upper = exs(satisfy, isUpper ,"<?>", "uppercase letter");
+
+
+// | Parses a lower case character (a character between \'a\' and \'z\').
+// Returns the parsed character. 
+
+//lower :: (Stream s m Char) => ParsecT s u m Char
+//lower               = satisfy isLower       <?> "lowercase letter"
+
+var lower = exs(satisfy, isLower ,"<?>", "lowercase letter");
+
+
+// | Parses a letter or digit (a character between \'0\' and \'9\').
+// Returns the parsed character. 
+
+//alphaNum :: (Stream s m Char => ParsecT s u m Char)
+//alphaNum            = satisfy isAlphaNum    <?> "letter or digit"
+
+var alphaNum = exs(satisfy, isAlphaNum ,"<?>", "letter or digit");
+
+
+// | Parses a letter (an upper case or lower case character). Returns the
+// parsed character. 
+
+//letter :: (Stream s m Char) => ParsecT s u m Char
+//letter              = satisfy isAlpha       <?> "letter"
+
+var letter = exs(satisfy, isAlpha ,"<?>", "letter");
+
+// | Parses a digit. Returns the parsed character. 
+
+//digit :: (Stream s m Char) => ParsecT s u m Char
+//digit               = satisfy isDigit       <?> "digit"
+
+var digit = exs(satisfy, isDigit ,"<?>", "digit");
+
+
+// | Parses a hexadecimal digit (a digit or a letter between \'a\' and
+// \'f\' or \'A\' and \'F\'). Returns the parsed character. 
+
+//hexDigit :: (Stream s m Char) => ParsecT s u m Char
+//hexDigit            = satisfy isHexDigit    <?> "hexadecimal digit"
+
+var hexDigit = exs(satisfy, isHexDigit ,"<?>", "hexadecimal digit");
+
+
+// | Parses an octal digit (a character between \'0\' and \'7\'). Returns
+// the parsed character. 
+
+//octDigit :: (Stream s m Char) => ParsecT s u m Char
+//octDigit            = satisfy isOctDigit    <?> "octal digit"
+
+var octDigit = exs(satisfy, isOctDigit ,"<?>", "octal digit");
+
+
+// | This parser succeeds for any character. Returns the parsed character. 
+
+//anyChar :: (Stream s m Char) => ParsecT s u m Char
+//anyChar             = satisfy (const True)
+
+var anyChar = exs(satisfy, const_(true));
+
+
+// | @char c@ parses a single character @c@. Returns the parsed
+// character (i.e. @c@).
+//
+// >  semiColon  = char ';'
+
+//char c              = satisfy (==c)  <?> show [c]
+
+//var char_ = function(c){
+//	return ex(satisfy, function(ch){ return ch == c } ,"<?>", c).resolve();
+//}
+
+// -- a specialized version is defined in Prim
+
+
+
+// | @string s@ parses a sequence of characters given by @s@. Returns
+// the parsed string (i.e. @s@).
+//
+// >  divOrMod    =   string "div" 
+// >              <|> string "mod"
+
+//string :: (Stream s m Char) => String -> ParsecT s u m String
+//string s            = tokens show updatePosString s
+
+// -- defined in Prim
+
+namespace("Text_Parsec_Char", {
+    oneOf    : oneOf,
+    noneOf   : noneOf,
+    space    : space,
+    spaces   : spaces,
+    newline  : newline,
+    tab      : tab,
+    upper    : upper,
+    lower    : lower,
+    alphaNum : alphaNum,
+    letter   : letter,
+    digit    : digit,
+    hexDigit : hexDigit,
+    octDigit : octDigit,
+    anyChar  : anyChar
+});/// <reference path="Prim.js" />
 
 // -------------------------------------------------
 // Combinator
@@ -8366,475 +10364,6 @@ namespace("Text_Parsec_Combinator", {
   , manyTill      : manyTill
   , lookAhead     : lookAhead
   , anyToken      : anyToken
-});/// <reference path="Prim.js" />
-/// <reference path="Combinator.js" />
-
-// -------------------------------------------------
-// Expr
-// -------------------------------------------------
-
-//-----------------------------------------------------------------------------
-//-- |
-//-- Module      :  Text.Parsec.Expr
-//-- Copyright   :  (c) Daan Leijen 1999-2001, (c) Paolo Martini 2007
-//-- License     :  BSD-style (see the LICENSE file)
-//-- 
-//-- Maintainer  :  derek.a.elkins@gmail.com
-//-- Stability   :  provisional
-//-- Portability :  non-portable
-//-- 
-//-- A helper module to parse \"expressions\".
-//-- Builds a parser given a table of operators and associativities.
-//-- 
-//-----------------------------------------------------------------------------
-//
-//module Text.Parsec.Expr
-//    ( Assoc(..), Operator(..), OperatorTable
-//    , buildExpressionParser
-//    ) where
-//
-//import Text.Parsec.Prim
-//import Text.Parsec.Combinator
-//
-//-----------------------------------------------------------
-//-- Assoc and OperatorTable
-//-----------------------------------------------------------
-//
-//-- |  This data type specifies the associativity of operators: left, right
-//-- or none.
-//
-//data Assoc                = AssocNone
-//                          | AssocLeft
-//                          | AssocRight
-
-function Assoc(){}
-data(Assoc, ["AssocNone", "AssocLeft", "AssocRight"]);
-
-//-- | This data type specifies operators that work on values of type @a@.
-//-- An operator is either binary infix or unary prefix or postfix. A
-//-- binary operator has also an associated associativity.
-//
-//data Operator s u m a   = Infix (ParsecT s u m (a -> a -> a)) Assoc
-//                        | Prefix (ParsecT s u m (a -> a))
-//                        | Postfix (ParsecT s u m (a -> a))
-function Operator(){}
-data(Operator, [
-    ["Infix", Parser, Assoc],
-    ["Prefix", Parser],
-    ["Postfix", Parser]
-]);
-
-
-//-- | An @OperatorTable s u m a@ is a list of @Operator s u m a@
-//-- lists. The list is ordered in descending
-//-- precedence. All operators in one list have the same precedence (but
-//-- may have a different associativity).
-//
-//type OperatorTable s u m a = [[Operator s u m a]]
-
-
-//-----------------------------------------------------------
-//-- Convert an OperatorTable and basic term parser into
-//-- a full fledged expression parser
-//-----------------------------------------------------------
-//
-//-- | @buildExpressionParser table term@ builds an expression parser for
-//-- terms @term@ with operators from @table@, taking the associativity
-//-- and precedence specified in @table@ into account. Prefix and postfix
-//-- operators of the same precedence can only occur once (i.e. @--2@ is
-//-- not allowed if @-@ is prefix negate). Prefix and postfix operators
-//-- of the same precedence associate to the left (i.e. if @++@ is
-//-- postfix increment, than @-2++@ equals @-1@, not @-3@).
-//--
-//-- The @buildExpressionParser@ takes care of all the complexity
-//-- involved in building expression parser. Here is an example of an
-//-- expression parser that handles prefix signs, postfix increment and
-//-- basic arithmetic.
-//--
-//-- >  expr    = buildExpressionParser table term
-//-- >          <?> "expression"
-//-- >
-//-- >  term    =  parens expr 
-//-- >          <|> natural
-//-- >          <?> "simple expression"
-//-- >
-//-- >  table   = [ [prefix "-" negate, prefix "+" id ]
-//-- >            , [postfix "++" (+1)]
-//-- >            , [binary "*" (*) AssocLeft, binary "/" (div) AssocLeft ]
-//-- >            , [binary "+" (+) AssocLeft, binary "-" (-)   AssocLeft ]
-//-- >            ]
-//-- >          
-//-- >  binary  name fun assoc = Infix (do{ reservedOp name; return fun }) assoc
-//-- >  prefix  name fun       = Prefix (do{ reservedOp name; return fun })
-//-- >  postfix name fun       = Postfix (do{ reservedOp name; return fun })
-//
-//buildExpressionParser :: (Stream s m t)
-//                      => OperatorTable s u m a
-//                      -> ParsecT s u m a
-//                      -> ParsecT s u m a
-//buildExpressionParser operators simpleExpr = ...
-function buildExpressionParser(operators, simpleExpr){
-    
-    function hook(fn, ident){
-        return function(scope, state, k){
-            return fn(scope[ident])(scope, state, k);
-        };
-    }
-    
-    function splitOp(oper, tuple){
-        
-        var op = oper[0];
-        var rassoc  = tuple[0],
-            lassoc  = tuple[1],
-            nassoc  = tuple[2],
-            prefix  = tuple[3],
-            postfix = tuple[4];
-        
-//      splitOp (Infix op assoc) (rassoc,lassoc,nassoc,prefix,postfix)
-//        = case assoc of
-//            AssocNone  -> (rassoc,lassoc,op:nassoc,prefix,postfix)
-//            AssocLeft  -> (rassoc,op:lassoc,nassoc,prefix,postfix)
-//            AssocRight -> (op:rassoc,lassoc,nassoc,prefix,postfix)
-        if(oper.Infix){
-            var assoc = oper[1];
-            if(assoc.AssocNone)
-                return [rassoc, lassoc, cons(op, nassoc), prefix, postfix];
-            if(assoc.AssocLeft)
-                return [rassoc, cons(op, lassoc), nassoc, prefix, postfix];
-            if(assoc.AssocRight)
-                return [cons(op, rassoc), lassoc, nassoc, prefix, postfix];
-        }
-
-//      splitOp (Prefix op) (rassoc,lassoc,nassoc,prefix,postfix)
-//        = (rassoc,lassoc,nassoc,op:prefix,postfix)
-        if(oper.Prefix)
-            return [rassoc, lassoc, nassoc, cons(op, prefix), postfix];
-        
-//      splitOp (Postfix op) (rassoc,lassoc,nassoc,prefix,postfix)
-//        = (rassoc,lassoc,nassoc,prefix,op:postfix)
-        if(oper.Postfix)
-            return [rassoc, lassoc, nassoc, prefix, cons(op, postfix)];
-    }
-    
-    
-//              ambigious assoc op = try $
-//                                  do{ op; fail ("ambiguous use of a " ++ assoc
-//                                                 ++ " associative operator")
-//                                    }
-    function ambigious(assoc, op){
-        return try_(do_(op, fail("ambiguous use of a " + assoc + " associative operator")));
-    }
-
-
-    function makeParser(term, ops){
-        
-        var tuple = foldr(splitOp, [[],[],[],[],[]], ops);
-        
-        var rassoc  = tuple[0],
-            lassoc  = tuple[1],
-            nassoc  = tuple[2],
-            prefix  = tuple[3],
-            postfix = tuple[4];
-            
-        var rassocOp   = choice(rassoc),
-            lassocOp   = choice(lassoc),
-            nassocOp   = choice(nassoc),
-            prefixOp   = label(choice(prefix) , ""),
-            postfixOp  = label(choice(postfix), "");
-            
-        var ambigiousRight = ambigious("right", rassocOp),
-            ambigiousLeft  = ambigious("left" , lassocOp),
-            ambigiousNon   = ambigious("non"  , nassocOp);
-            
-        var postfixP  = parserPlus(postfixOp, return_(id)),
-            prefixP   = parserPlus(prefixOp , return_(id));
-            
-//              termP      = do{ pre  <- prefixP
-//                             ; x    <- term
-//                             ; post <- postfixP
-//                             ; return (post (pre x))
-//                             }
-        var termP = do$
-            ("pre"  ,"<-", prefixP)
-            ("x"    ,"<-", term)
-            ("post" ,"<-", postfixP)
-            (ret, function(scope){ return scope.post(scope.pre(scope.x)) })
-        
-        
-//              rassocP x  = do{ f <- rassocOp
-//                             ; y  <- do{ z <- termP; rassocP1 z }
-//                             ; return (f x y)
-//                             }
-//                           <|> ambigiousLeft
-//                           <|> ambigiousNon
-//                           -- <|> return x
-        function rassocP(x){
-            return ex(do$("f"  ,"<-", rassocOp)
-                         ("y"  ,"<-", do$("z"  ,"<-", termP)
-                                         (hook, rassocP1, "z")
-                         )
-                         (ret, function(scope){ return scope.f(x, scope.y) })
-                    ,"<|>", ambigiousLeft
-                    ,"<|>", ambigiousNon
-                    //,"<|>", return_, x
-                    );
-        }
-        
-//              rassocP1 x = rassocP x  <|> return x
-        function rassocP1(x){
-            return parserPlus(rassocP(x), return_(x));
-        }
-        
-//              lassocP x  = do{ f <- lassocOp
-//                             ; y <- termP
-//                             ; lassocP1 (f x y)
-//                             }
-//                           <|> ambigiousRight
-//                           <|> ambigiousNon
-//                           -- <|> return x
-        function lassocP(x){
-            return ex(do$("f"  ,"<-", lassocOp)
-                         ("y"  ,"<-", termP)
-                         (function(scope, state, k){
-                             return lassocP1(scope.f(x, scope.y))(scope, state, k);
-                         })
-                         ,"<|>", ambigiousRight
-                         ,"<|>", ambigiousNon
-                         //,"<|>", return_, x
-                    );
-        }
-        
-//              lassocP1 x = lassocP x <|> return x
-        function lassocP1(x){
-            return parserPlus(lassocP(x), return_(x));
-        }
-
-//              nassocP x  = do{ f <- nassocOp
-//                             ; y <- termP
-//                             ;    ambigiousRight
-//                              <|> ambigiousLeft
-//                              <|> ambigiousNon
-//                              <|> return (f x y)
-//                             }
-//                           -- <|> return x
-        function nassocP(x){
-            return do$
-                ("f"  ,"<-", nassocOp)
-                ("y"  ,"<-", termP)
-                (       ambigiousRight
-                ,"<|>", ambigiousLeft
-                ,"<|>", ambigiousNon
-                ,"<|>", ret, function(scope){ return scope.f(x, scope.y) }
-                )
-        }
-        
-//           in  do{ x <- termP
-//                 ; rassocP x <|> lassocP  x <|> nassocP x <|> return x
-//                   <?> "operator"
-//                 }
-        return do$("x" ,"<-", termP)
-                  (hook, rassocP, "x"
-                  ,"<|>", hook, lassocP, "x"
-                  ,"<|>", hook, nassocP, "x"
-                  ,"<|>", ret, "x"
-                  ,"<?>", "operator").resolve();
-    }
-        
-//  buildExpressionParser operators simpleExpr
-//       = foldl (makeParser) simpleExpr operators
-    return foldl(makeParser, simpleExpr, operators);
-}
-
-
-namespace("Text_Parsec_Expr", {
-    Assoc: Assoc,
-    Operator: Operator,
-    buildExpressionParser: buildExpressionParser
-});/// <reference path="../../../../base/src/Data/Char.js" local />
-/// <reference path="Prim.js" />
-
-
-// -------------------------------------------------
-// Char
-// -------------------------------------------------
-
-
-//-- Commonly used character parsers.
-
-//module Text.Parsec.Char where
-//
-//import Data.Char
-//import Text.Parsec.Pos
-//import Text.Parsec.Prim
-
-// | @oneOf cs@ succeeds if the current character is in the supplied
-// list of characters @cs@. Returns the parsed character. See also
-// 'satisfy'.
-// 
-// >   vowel  = oneOf "aeiou"
-
-//oneOf :: (Stream s m Char) => [Char] -> ParsecT s u m Char
-//oneOf cs            = satisfy (\c -> elem c cs)
-
-var oneOf = function(cs){
-	return label(satisfy(function(c){ return elem(c, cs) }), "oneOf(" + cs + ")");
-};
-
-// | As the dual of 'oneOf', @noneOf cs@ succeeds if the current
-// character /not/ in the supplied list of characters @cs@. Returns the
-// parsed character.
-//
-// >  consonant = noneOf "aeiou"
-
-//noneOf :: (Stream s m Char) => [Char] -> ParsecT s u m Char
-//noneOf cs           = satisfy (\c -> not (elem c cs))
-
-var noneOf = function(cs){
-	return label(satisfy(function(c){ return !elem(c, cs) }), "noneOf(" + cs + ")");
-};
-
-
-// | Parses a white space character (any character which satisfies 'isSpace')
-// Returns the parsed character. 
-
-//space :: (Stream s m Char) => ParsecT s u m Char
-//space               = satisfy isSpace       <?> "space"
-
-var space = exs(satisfy, isSpace ,"<?>", "space");
-
-
-// | Skips /zero/ or more white space characters. See also 'skipMany'.
-
-//spaces :: (Stream s m Char) => ParsecT s u m ()
-//spaces              = skipMany space        <?> "white space"
-
-var spaces = exs(skipMany, space ,"<?>", "white space");
-
-
-// | Parses a newline character (\'\\n\'). Returns a newline character. 
-
-//newline :: (Stream s m Char) => ParsecT s u m Char
-//newline             = char '\n'             <?> "new-line"
-
-var newline = exs(char_, '\n' ,"<?>", "new-line");
-
-// | Parses a tab character (\'\\t\'). Returns a tab character. 
-
-//tab :: (Stream s m Char) => ParsecT s u m Char
-//tab                 = char '\t'             <?> "tab"
-
-var tab = exs(char_, '\t' ,"<?>", "tab");
-
-// | Parses an upper case letter (a character between \'A\' and \'Z\').
-// Returns the parsed character. 
-
-//upper :: (Stream s m Char) => ParsecT s u m Char
-//upper               = satisfy isUpper       <?> "uppercase letter"
-
-var upper = exs(satisfy, isUpper ,"<?>", "uppercase letter");
-
-
-// | Parses a lower case character (a character between \'a\' and \'z\').
-// Returns the parsed character. 
-
-//lower :: (Stream s m Char) => ParsecT s u m Char
-//lower               = satisfy isLower       <?> "lowercase letter"
-
-var lower = exs(satisfy, isLower ,"<?>", "lowercase letter");
-
-
-// | Parses a letter or digit (a character between \'0\' and \'9\').
-// Returns the parsed character. 
-
-//alphaNum :: (Stream s m Char => ParsecT s u m Char)
-//alphaNum            = satisfy isAlphaNum    <?> "letter or digit"
-
-var alphaNum = exs(satisfy, isAlphaNum ,"<?>", "letter or digit");
-
-
-// | Parses a letter (an upper case or lower case character). Returns the
-// parsed character. 
-
-//letter :: (Stream s m Char) => ParsecT s u m Char
-//letter              = satisfy isAlpha       <?> "letter"
-
-var letter = exs(satisfy, isAlpha ,"<?>", "letter");
-
-// | Parses a digit. Returns the parsed character. 
-
-//digit :: (Stream s m Char) => ParsecT s u m Char
-//digit               = satisfy isDigit       <?> "digit"
-
-var digit = exs(satisfy, isDigit ,"<?>", "digit");
-
-
-// | Parses a hexadecimal digit (a digit or a letter between \'a\' and
-// \'f\' or \'A\' and \'F\'). Returns the parsed character. 
-
-//hexDigit :: (Stream s m Char) => ParsecT s u m Char
-//hexDigit            = satisfy isHexDigit    <?> "hexadecimal digit"
-
-var hexDigit = exs(satisfy, isHexDigit ,"<?>", "hexadecimal digit");
-
-
-// | Parses an octal digit (a character between \'0\' and \'7\'). Returns
-// the parsed character. 
-
-//octDigit :: (Stream s m Char) => ParsecT s u m Char
-//octDigit            = satisfy isOctDigit    <?> "octal digit"
-
-var octDigit = exs(satisfy, isOctDigit ,"<?>", "octal digit");
-
-
-// | This parser succeeds for any character. Returns the parsed character. 
-
-//anyChar :: (Stream s m Char) => ParsecT s u m Char
-//anyChar             = satisfy (const True)
-
-var anyChar = exs(satisfy, const_(true));
-
-
-// | @char c@ parses a single character @c@. Returns the parsed
-// character (i.e. @c@).
-//
-// >  semiColon  = char ';'
-
-//char c              = satisfy (==c)  <?> show [c]
-
-//var char_ = function(c){
-//	return ex(satisfy, function(ch){ return ch == c } ,"<?>", c).resolve();
-//}
-
-// -- a specialized version is defined in Prim
-
-
-
-// | @string s@ parses a sequence of characters given by @s@. Returns
-// the parsed string (i.e. @s@).
-//
-// >  divOrMod    =   string "div" 
-// >              <|> string "mod"
-
-//string :: (Stream s m Char) => String -> ParsecT s u m String
-//string s            = tokens show updatePosString s
-
-// -- defined in Prim
-
-namespace("Text_Parsec_Char", {
-    oneOf    : oneOf,
-    noneOf   : noneOf,
-    space    : space,
-    spaces   : spaces,
-    newline  : newline,
-    tab      : tab,
-    upper    : upper,
-    lower    : lower,
-    alphaNum : alphaNum,
-    letter   : letter,
-    digit    : digit,
-    hexDigit : hexDigit,
-    octDigit : octDigit,
-    anyChar  : anyChar
 });/// <reference path="../../../../base/src/Data/Char.js" local />
 /// <reference path="../../../../base/src/Data/List.js" local />
 /// <reference path="Prim.js" />
@@ -10321,6 +11850,290 @@ namespace("Text_Parsec_Language", {
     mondrianDef : mondrianDef,
     getHaskell  : function(){ return makeTokenParser(haskellDef)  },
     getMondrian : function(){ return makeTokenParser(mondrianDef) }
+});/// <reference path="Prim.js" />
+/// <reference path="Combinator.js" />
+
+// -------------------------------------------------
+// Expr
+// -------------------------------------------------
+
+//-----------------------------------------------------------------------------
+//-- |
+//-- Module      :  Text.Parsec.Expr
+//-- Copyright   :  (c) Daan Leijen 1999-2001, (c) Paolo Martini 2007
+//-- License     :  BSD-style (see the LICENSE file)
+//-- 
+//-- Maintainer  :  derek.a.elkins@gmail.com
+//-- Stability   :  provisional
+//-- Portability :  non-portable
+//-- 
+//-- A helper module to parse \"expressions\".
+//-- Builds a parser given a table of operators and associativities.
+//-- 
+//-----------------------------------------------------------------------------
+//
+//module Text.Parsec.Expr
+//    ( Assoc(..), Operator(..), OperatorTable
+//    , buildExpressionParser
+//    ) where
+//
+//import Text.Parsec.Prim
+//import Text.Parsec.Combinator
+//
+//-----------------------------------------------------------
+//-- Assoc and OperatorTable
+//-----------------------------------------------------------
+//
+//-- |  This data type specifies the associativity of operators: left, right
+//-- or none.
+//
+//data Assoc                = AssocNone
+//                          | AssocLeft
+//                          | AssocRight
+
+function Assoc(){}
+data(Assoc, ["AssocNone", "AssocLeft", "AssocRight"]);
+
+//-- | This data type specifies operators that work on values of type @a@.
+//-- An operator is either binary infix or unary prefix or postfix. A
+//-- binary operator has also an associated associativity.
+//
+//data Operator s u m a   = Infix (ParsecT s u m (a -> a -> a)) Assoc
+//                        | Prefix (ParsecT s u m (a -> a))
+//                        | Postfix (ParsecT s u m (a -> a))
+function Operator(){}
+data(Operator, [
+    ["Infix", Parser, Assoc],
+    ["Prefix", Parser],
+    ["Postfix", Parser]
+]);
+
+
+//-- | An @OperatorTable s u m a@ is a list of @Operator s u m a@
+//-- lists. The list is ordered in descending
+//-- precedence. All operators in one list have the same precedence (but
+//-- may have a different associativity).
+//
+//type OperatorTable s u m a = [[Operator s u m a]]
+
+
+//-----------------------------------------------------------
+//-- Convert an OperatorTable and basic term parser into
+//-- a full fledged expression parser
+//-----------------------------------------------------------
+//
+//-- | @buildExpressionParser table term@ builds an expression parser for
+//-- terms @term@ with operators from @table@, taking the associativity
+//-- and precedence specified in @table@ into account. Prefix and postfix
+//-- operators of the same precedence can only occur once (i.e. @--2@ is
+//-- not allowed if @-@ is prefix negate). Prefix and postfix operators
+//-- of the same precedence associate to the left (i.e. if @++@ is
+//-- postfix increment, than @-2++@ equals @-1@, not @-3@).
+//--
+//-- The @buildExpressionParser@ takes care of all the complexity
+//-- involved in building expression parser. Here is an example of an
+//-- expression parser that handles prefix signs, postfix increment and
+//-- basic arithmetic.
+//--
+//-- >  expr    = buildExpressionParser table term
+//-- >          <?> "expression"
+//-- >
+//-- >  term    =  parens expr 
+//-- >          <|> natural
+//-- >          <?> "simple expression"
+//-- >
+//-- >  table   = [ [prefix "-" negate, prefix "+" id ]
+//-- >            , [postfix "++" (+1)]
+//-- >            , [binary "*" (*) AssocLeft, binary "/" (div) AssocLeft ]
+//-- >            , [binary "+" (+) AssocLeft, binary "-" (-)   AssocLeft ]
+//-- >            ]
+//-- >          
+//-- >  binary  name fun assoc = Infix (do{ reservedOp name; return fun }) assoc
+//-- >  prefix  name fun       = Prefix (do{ reservedOp name; return fun })
+//-- >  postfix name fun       = Postfix (do{ reservedOp name; return fun })
+//
+//buildExpressionParser :: (Stream s m t)
+//                      => OperatorTable s u m a
+//                      -> ParsecT s u m a
+//                      -> ParsecT s u m a
+//buildExpressionParser operators simpleExpr = ...
+function buildExpressionParser(operators, simpleExpr){
+    
+    function hook(fn, ident){
+        return function(scope, state, k){
+            return fn(scope[ident])(scope, state, k);
+        };
+    }
+    
+    function splitOp(oper, tuple){
+        
+        var op = oper[0];
+        var rassoc  = tuple[0],
+            lassoc  = tuple[1],
+            nassoc  = tuple[2],
+            prefix  = tuple[3],
+            postfix = tuple[4];
+        
+//      splitOp (Infix op assoc) (rassoc,lassoc,nassoc,prefix,postfix)
+//        = case assoc of
+//            AssocNone  -> (rassoc,lassoc,op:nassoc,prefix,postfix)
+//            AssocLeft  -> (rassoc,op:lassoc,nassoc,prefix,postfix)
+//            AssocRight -> (op:rassoc,lassoc,nassoc,prefix,postfix)
+        if(oper.Infix){
+            var assoc = oper[1];
+            if(assoc.AssocNone)
+                return [rassoc, lassoc, cons(op, nassoc), prefix, postfix];
+            if(assoc.AssocLeft)
+                return [rassoc, cons(op, lassoc), nassoc, prefix, postfix];
+            if(assoc.AssocRight)
+                return [cons(op, rassoc), lassoc, nassoc, prefix, postfix];
+        }
+
+//      splitOp (Prefix op) (rassoc,lassoc,nassoc,prefix,postfix)
+//        = (rassoc,lassoc,nassoc,op:prefix,postfix)
+        if(oper.Prefix)
+            return [rassoc, lassoc, nassoc, cons(op, prefix), postfix];
+        
+//      splitOp (Postfix op) (rassoc,lassoc,nassoc,prefix,postfix)
+//        = (rassoc,lassoc,nassoc,prefix,op:postfix)
+        if(oper.Postfix)
+            return [rassoc, lassoc, nassoc, prefix, cons(op, postfix)];
+    }
+    
+    
+//              ambigious assoc op = try $
+//                                  do{ op; fail ("ambiguous use of a " ++ assoc
+//                                                 ++ " associative operator")
+//                                    }
+    function ambigious(assoc, op){
+        return try_(do_(op, fail("ambiguous use of a " + assoc + " associative operator")));
+    }
+
+
+    function makeParser(term, ops){
+        
+        var tuple = foldr(splitOp, [[],[],[],[],[]], ops);
+        
+        var rassoc  = tuple[0],
+            lassoc  = tuple[1],
+            nassoc  = tuple[2],
+            prefix  = tuple[3],
+            postfix = tuple[4];
+            
+        var rassocOp   = choice(rassoc),
+            lassocOp   = choice(lassoc),
+            nassocOp   = choice(nassoc),
+            prefixOp   = label(choice(prefix) , ""),
+            postfixOp  = label(choice(postfix), "");
+            
+        var ambigiousRight = ambigious("right", rassocOp),
+            ambigiousLeft  = ambigious("left" , lassocOp),
+            ambigiousNon   = ambigious("non"  , nassocOp);
+            
+        var postfixP  = parserPlus(postfixOp, return_(id)),
+            prefixP   = parserPlus(prefixOp , return_(id));
+            
+//              termP      = do{ pre  <- prefixP
+//                             ; x    <- term
+//                             ; post <- postfixP
+//                             ; return (post (pre x))
+//                             }
+        var termP = do$
+            ("pre"  ,"<-", prefixP)
+            ("x"    ,"<-", term)
+            ("post" ,"<-", postfixP)
+            (ret, function(scope){ return scope.post(scope.pre(scope.x)) })
+        
+        
+//              rassocP x  = do{ f <- rassocOp
+//                             ; y  <- do{ z <- termP; rassocP1 z }
+//                             ; return (f x y)
+//                             }
+//                           <|> ambigiousLeft
+//                           <|> ambigiousNon
+//                           -- <|> return x
+        function rassocP(x){
+            return ex(do$("f"  ,"<-", rassocOp)
+                         ("y"  ,"<-", do$("z"  ,"<-", termP)
+                                         (hook, rassocP1, "z")
+                         )
+                         (ret, function(scope){ return scope.f(x, scope.y) })
+                    ,"<|>", ambigiousLeft
+                    ,"<|>", ambigiousNon
+                    //,"<|>", return_, x
+                    );
+        }
+        
+//              rassocP1 x = rassocP x  <|> return x
+        function rassocP1(x){
+            return parserPlus(rassocP(x), return_(x));
+        }
+        
+//              lassocP x  = do{ f <- lassocOp
+//                             ; y <- termP
+//                             ; lassocP1 (f x y)
+//                             }
+//                           <|> ambigiousRight
+//                           <|> ambigiousNon
+//                           -- <|> return x
+        function lassocP(x){
+            return ex(do$("f"  ,"<-", lassocOp)
+                         ("y"  ,"<-", termP)
+                         (function(scope, state, k){
+                             return lassocP1(scope.f(x, scope.y))(scope, state, k);
+                         })
+                         ,"<|>", ambigiousRight
+                         ,"<|>", ambigiousNon
+                         //,"<|>", return_, x
+                    );
+        }
+        
+//              lassocP1 x = lassocP x <|> return x
+        function lassocP1(x){
+            return parserPlus(lassocP(x), return_(x));
+        }
+
+//              nassocP x  = do{ f <- nassocOp
+//                             ; y <- termP
+//                             ;    ambigiousRight
+//                              <|> ambigiousLeft
+//                              <|> ambigiousNon
+//                              <|> return (f x y)
+//                             }
+//                           -- <|> return x
+        function nassocP(x){
+            return do$
+                ("f"  ,"<-", nassocOp)
+                ("y"  ,"<-", termP)
+                (       ambigiousRight
+                ,"<|>", ambigiousLeft
+                ,"<|>", ambigiousNon
+                ,"<|>", ret, function(scope){ return scope.f(x, scope.y) }
+                )
+        }
+        
+//           in  do{ x <- termP
+//                 ; rassocP x <|> lassocP  x <|> nassocP x <|> return x
+//                   <?> "operator"
+//                 }
+        return do$("x" ,"<-", termP)
+                  (hook, rassocP, "x"
+                  ,"<|>", hook, lassocP, "x"
+                  ,"<|>", hook, nassocP, "x"
+                  ,"<|>", ret, "x"
+                  ,"<?>", "operator").resolve();
+    }
+        
+//  buildExpressionParser operators simpleExpr
+//       = foldl (makeParser) simpleExpr operators
+    return foldl(makeParser, simpleExpr, operators);
+}
+
+
+namespace("Text_Parsec_Expr", {
+    Assoc: Assoc,
+    Operator: Operator,
+    buildExpressionParser: buildExpressionParser
 });
 }());;(function(){
 /// <reference path="Parsec/Prim.js" />
@@ -10343,9 +12156,113 @@ importSubmodules("Text_Parsec",
 
 
 }());;(function(){
-;var data = NS['Haskell_DataType'].data, ADT = NS['Haskell_DataType'].ADT, record = NS['Haskell_DataType'].record, accessor = NS['Haskell_DataType'].accessor, accessors = NS['Haskell_DataType'].accessors;;var cons = NS['Prelude'].cons, consJoin = NS['Prelude'].consJoin, uncons = NS['Prelude'].uncons, elemIndex = NS['Prelude'].elemIndex, unsafeCompare = NS['Prelude'].unsafeCompare, readHex = NS['Prelude'].readHex, readOct = NS['Prelude'].readOct, round = NS['Prelude'].round, toInteger = NS['Prelude'].toInteger, fromInteger = NS['Prelude'].fromInteger, fromIntegral = NS['Prelude'].fromIntegral, Bool = NS['Prelude'].Bool, andOp = NS['Prelude'].andOp, orOp = NS['Prelude'].orOp, not = NS['Prelude'].not, otherwise = NS['Prelude'].otherwise, Maybe = NS['Prelude'].Maybe, maybe = NS['Prelude'].maybe, Either = NS['Prelude'].Either, either = NS['Prelude'].either, Ordering = NS['Prelude'].Ordering, String = NS['Prelude'].String, fst = NS['Prelude'].fst, snd = NS['Prelude'].snd, curry = NS['Prelude'].curry, curry_ = NS['Prelude'].curry_, uncurry = NS['Prelude'].uncurry, Eq = NS['Prelude'].Eq, Ord = NS['Prelude'].Ord, Monad = NS['Prelude'].Monad, Functor = NS['Prelude'].Functor, id = NS['Prelude'].id, const_ = NS['Prelude'].const_, compose = NS['Prelude'].compose, compose1 = NS['Prelude'].compose1, flip = NS['Prelude'].flip, call = NS['Prelude'].call, until = NS['Prelude'].until, asTypeOf = NS['Prelude'].asTypeOf, error = NS['Prelude'].error, map = NS['Prelude'].map, append = NS['Prelude'].append, filter = NS['Prelude'].filter, head = NS['Prelude'].head, last = NS['Prelude'].last, tail = NS['Prelude'].tail, init = NS['Prelude'].init, null_ = NS['Prelude'].null_, length = NS['Prelude'].length, index = NS['Prelude'].index, reverse = NS['Prelude'].reverse, foldl = NS['Prelude'].foldl, foldl1 = NS['Prelude'].foldl1, foldr = NS['Prelude'].foldr, foldr1 = NS['Prelude'].foldr1, and = NS['Prelude'].and, or = NS['Prelude'].or, any = NS['Prelude'].any, all = NS['Prelude'].all, sum = NS['Prelude'].sum, product = NS['Prelude'].product, concat = NS['Prelude'].concat, concatMap = NS['Prelude'].concatMap, maximum = NS['Prelude'].maximum, minimum = NS['Prelude'].minimum, scanl = NS['Prelude'].scanl, scanl1 = NS['Prelude'].scanl1, scanr = NS['Prelude'].scanr, scanr1 = NS['Prelude'].scanr1, replicate = NS['Prelude'].replicate, take = NS['Prelude'].take, drop = NS['Prelude'].drop, splitAt = NS['Prelude'].splitAt, takeWhile = NS['Prelude'].takeWhile, dropWhile = NS['Prelude'].dropWhile, span = NS['Prelude'].span, break_ = NS['Prelude'].break_, elem = NS['Prelude'].elem, notElem = NS['Prelude'].notElem, lookup = NS['Prelude'].lookup, zip = NS['Prelude'].zip, zip3 = NS['Prelude'].zip3, zipWith = NS['Prelude'].zipWith, zipWith3 = NS['Prelude'].zipWith3, unzip = NS['Prelude'].unzip, unzip3 = NS['Prelude'].unzip3, lines = NS['Prelude'].lines, words = NS['Prelude'].words, unlines = NS['Prelude'].unlines, unwords = NS['Prelude'].unwords, Show = NS['Prelude'].Show;;var sequence = NS['Text_Parsec'].sequence, run = NS['Text_Parsec'].run, Parser = NS['Text_Parsec'].Parser, ParseState = NS['Text_Parsec'].ParseState, ps = NS['Text_Parsec'].ps, toParser = NS['Text_Parsec'].toParser, unexpected = NS['Text_Parsec'].unexpected, parsecMap = NS['Text_Parsec'].parsecMap, fmap = NS['Text_Parsec'].fmap, liftM = NS['Text_Parsec'].liftM, liftM2 = NS['Text_Parsec'].liftM2, liftM3 = NS['Text_Parsec'].liftM3, liftA = NS['Text_Parsec'].liftA, liftA2 = NS['Text_Parsec'].liftA2, liftA3 = NS['Text_Parsec'].liftA3, ap = NS['Text_Parsec'].ap, parserBind = NS['Text_Parsec'].parserBind, parserReturn = NS['Text_Parsec'].parserReturn, return_ = NS['Text_Parsec'].return_, pure = NS['Text_Parsec'].pure, parserFail = NS['Text_Parsec'].parserFail, fail = NS['Text_Parsec'].fail, parserZero = NS['Text_Parsec'].parserZero, mzero = NS['Text_Parsec'].mzero, empty = NS['Text_Parsec'].empty, parserPlus = NS['Text_Parsec'].parserPlus, parserPlusN = NS['Text_Parsec'].parserPlusN, mplus = NS['Text_Parsec'].mplus, do_ = NS['Text_Parsec'].do_, do$ = NS['Text_Parsec'].do$, do2 = NS['Text_Parsec'].do2, bind = NS['Text_Parsec'].bind, ret = NS['Text_Parsec'].ret, withBound = NS['Text_Parsec'].withBound, returnCall = NS['Text_Parsec'].returnCall, getPosition = NS['Text_Parsec'].getPosition, setPosition = NS['Text_Parsec'].setPosition, getParserState = NS['Text_Parsec'].getParserState, setParserState = NS['Text_Parsec'].setParserState, tokens = NS['Text_Parsec'].tokens, many = NS['Text_Parsec'].many, many1 = NS['Text_Parsec'].many1, string = NS['Text_Parsec'].string, char_ = NS['Text_Parsec'].char_, satisfy = NS['Text_Parsec'].satisfy, label = NS['Text_Parsec'].label, try_ = NS['Text_Parsec'].try_, skipMany = NS['Text_Parsec'].skipMany, match = NS['Text_Parsec'].match, withScope = NS['Text_Parsec'].withScope, ex = NS['Text_Parsec'].ex, oneOf = NS['Text_Parsec'].oneOf, noneOf = NS['Text_Parsec'].noneOf, space = NS['Text_Parsec'].space, spaces = NS['Text_Parsec'].spaces, newline = NS['Text_Parsec'].newline, tab = NS['Text_Parsec'].tab, upper = NS['Text_Parsec'].upper, lower = NS['Text_Parsec'].lower, alphaNum = NS['Text_Parsec'].alphaNum, letter = NS['Text_Parsec'].letter, digit = NS['Text_Parsec'].digit, hexDigit = NS['Text_Parsec'].hexDigit, octDigit = NS['Text_Parsec'].octDigit, anyChar = NS['Text_Parsec'].anyChar, choice = NS['Text_Parsec'].choice, count = NS['Text_Parsec'].count, between = NS['Text_Parsec'].between, option = NS['Text_Parsec'].option, optionMaybe = NS['Text_Parsec'].optionMaybe, optional = NS['Text_Parsec'].optional, skipMany1 = NS['Text_Parsec'].skipMany1, sepBy = NS['Text_Parsec'].sepBy, sepBy1 = NS['Text_Parsec'].sepBy1, endBy = NS['Text_Parsec'].endBy, endBy1 = NS['Text_Parsec'].endBy1, sepEndBy = NS['Text_Parsec'].sepEndBy, sepEndBy1 = NS['Text_Parsec'].sepEndBy1, chainl = NS['Text_Parsec'].chainl, chainl1 = NS['Text_Parsec'].chainl1, chainr = NS['Text_Parsec'].chainr, chainr1 = NS['Text_Parsec'].chainr1, eof = NS['Text_Parsec'].eof, notFollowedBy = NS['Text_Parsec'].notFollowedBy, manyTill = NS['Text_Parsec'].manyTill, lookAhead = NS['Text_Parsec'].lookAhead, anyToken = NS['Text_Parsec'].anyToken, GenLanguageDef = NS['Text_Parsec'].GenLanguageDef, GenTokenParser = NS['Text_Parsec'].GenTokenParser, makeTokenParser = NS['Text_Parsec'].makeTokenParser, emptyDef = NS['Text_Parsec'].emptyDef, haskellStyle = NS['Text_Parsec'].haskellStyle, javaStyle = NS['Text_Parsec'].javaStyle, haskellDef = NS['Text_Parsec'].haskellDef, mondrianDef = NS['Text_Parsec'].mondrianDef, getHaskell = NS['Text_Parsec'].getHaskell, getMondrian = NS['Text_Parsec'].getMondrian, Assoc = NS['Text_Parsec'].Assoc, Operator = NS['Text_Parsec'].Operator, buildExpressionParser = NS['Text_Parsec'].buildExpressionParser;;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;;var String = NS['Data_Char'].String, ord = NS['Data_Char'].ord, chr = NS['Data_Char'].chr, isSpace = NS['Data_Char'].isSpace, isUpper = NS['Data_Char'].isUpper, isLower = NS['Data_Char'].isLower, isAlpha = NS['Data_Char'].isAlpha, isAlphaNum = NS['Data_Char'].isAlphaNum, isDigit = NS['Data_Char'].isDigit, isHexDigit = NS['Data_Char'].isHexDigit, isOctDigit = NS['Data_Char'].isOctDigit, toUpper = NS['Data_Char'].toUpper, toLower = NS['Data_Char'].toLower, toTitle = NS['Data_Char'].toTitle, digitToInt = NS['Data_Char'].digitToInt;
+;var sequence = NS['Text_Parsec'].sequence, run = NS['Text_Parsec'].run, Parser = NS['Text_Parsec'].Parser, ParseState = NS['Text_Parsec'].ParseState, ps = NS['Text_Parsec'].ps, toParser = NS['Text_Parsec'].toParser, unexpected = NS['Text_Parsec'].unexpected, parsecMap = NS['Text_Parsec'].parsecMap, fmap = NS['Text_Parsec'].fmap, liftM = NS['Text_Parsec'].liftM, liftM2 = NS['Text_Parsec'].liftM2, liftM3 = NS['Text_Parsec'].liftM3, liftA = NS['Text_Parsec'].liftA, liftA2 = NS['Text_Parsec'].liftA2, liftA3 = NS['Text_Parsec'].liftA3, ap = NS['Text_Parsec'].ap, parserBind = NS['Text_Parsec'].parserBind, parserReturn = NS['Text_Parsec'].parserReturn, return_ = NS['Text_Parsec'].return_, pure = NS['Text_Parsec'].pure, parserFail = NS['Text_Parsec'].parserFail, fail = NS['Text_Parsec'].fail, parserZero = NS['Text_Parsec'].parserZero, mzero = NS['Text_Parsec'].mzero, empty = NS['Text_Parsec'].empty, parserPlus = NS['Text_Parsec'].parserPlus, parserPlusN = NS['Text_Parsec'].parserPlusN, mplus = NS['Text_Parsec'].mplus, do_ = NS['Text_Parsec'].do_, do$ = NS['Text_Parsec'].do$, do2 = NS['Text_Parsec'].do2, bind = NS['Text_Parsec'].bind, ret = NS['Text_Parsec'].ret, withBound = NS['Text_Parsec'].withBound, returnCall = NS['Text_Parsec'].returnCall, getPosition = NS['Text_Parsec'].getPosition, setPosition = NS['Text_Parsec'].setPosition, getParserState = NS['Text_Parsec'].getParserState, setParserState = NS['Text_Parsec'].setParserState, tokens = NS['Text_Parsec'].tokens, many = NS['Text_Parsec'].many, many1 = NS['Text_Parsec'].many1, string = NS['Text_Parsec'].string, char_ = NS['Text_Parsec'].char_, satisfy = NS['Text_Parsec'].satisfy, label = NS['Text_Parsec'].label, try_ = NS['Text_Parsec'].try_, skipMany = NS['Text_Parsec'].skipMany, match = NS['Text_Parsec'].match, withScope = NS['Text_Parsec'].withScope, ex = NS['Text_Parsec'].ex, oneOf = NS['Text_Parsec'].oneOf, noneOf = NS['Text_Parsec'].noneOf, space = NS['Text_Parsec'].space, spaces = NS['Text_Parsec'].spaces, newline = NS['Text_Parsec'].newline, tab = NS['Text_Parsec'].tab, upper = NS['Text_Parsec'].upper, lower = NS['Text_Parsec'].lower, alphaNum = NS['Text_Parsec'].alphaNum, letter = NS['Text_Parsec'].letter, digit = NS['Text_Parsec'].digit, hexDigit = NS['Text_Parsec'].hexDigit, octDigit = NS['Text_Parsec'].octDigit, anyChar = NS['Text_Parsec'].anyChar, choice = NS['Text_Parsec'].choice, count = NS['Text_Parsec'].count, between = NS['Text_Parsec'].between, option = NS['Text_Parsec'].option, optionMaybe = NS['Text_Parsec'].optionMaybe, optional = NS['Text_Parsec'].optional, skipMany1 = NS['Text_Parsec'].skipMany1, sepBy = NS['Text_Parsec'].sepBy, sepBy1 = NS['Text_Parsec'].sepBy1, endBy = NS['Text_Parsec'].endBy, endBy1 = NS['Text_Parsec'].endBy1, sepEndBy = NS['Text_Parsec'].sepEndBy, sepEndBy1 = NS['Text_Parsec'].sepEndBy1, chainl = NS['Text_Parsec'].chainl, chainl1 = NS['Text_Parsec'].chainl1, chainr = NS['Text_Parsec'].chainr, chainr1 = NS['Text_Parsec'].chainr1, eof = NS['Text_Parsec'].eof, notFollowedBy = NS['Text_Parsec'].notFollowedBy, manyTill = NS['Text_Parsec'].manyTill, lookAhead = NS['Text_Parsec'].lookAhead, anyToken = NS['Text_Parsec'].anyToken, GenLanguageDef = NS['Text_Parsec'].GenLanguageDef, GenTokenParser = NS['Text_Parsec'].GenTokenParser, makeTokenParser = NS['Text_Parsec'].makeTokenParser, emptyDef = NS['Text_Parsec'].emptyDef, haskellStyle = NS['Text_Parsec'].haskellStyle, javaStyle = NS['Text_Parsec'].javaStyle, haskellDef = NS['Text_Parsec'].haskellDef, mondrianDef = NS['Text_Parsec'].mondrianDef, getHaskell = NS['Text_Parsec'].getHaskell, getMondrian = NS['Text_Parsec'].getMondrian, Assoc = NS['Text_Parsec'].Assoc, Operator = NS['Text_Parsec'].Operator, buildExpressionParser = NS['Text_Parsec'].buildExpressionParser;;var data = NS['Haskell_DataType'].data, ADT = NS['Haskell_DataType'].ADT, record = NS['Haskell_DataType'].record, accessor = NS['Haskell_DataType'].accessor, accessors = NS['Haskell_DataType'].accessors, showConstrOf = NS['Haskell_DataType'].showConstrOf;;var cons = NS['Prelude'].cons, consJoin = NS['Prelude'].consJoin, uncons = NS['Prelude'].uncons, elemIndex = NS['Prelude'].elemIndex, unsafeCompare = NS['Prelude'].unsafeCompare, emptyListOf = NS['Prelude'].emptyListOf, readHex = NS['Prelude'].readHex, readOct = NS['Prelude'].readOct, round = NS['Prelude'].round, toInteger = NS['Prelude'].toInteger, fromInteger = NS['Prelude'].fromInteger, fromIntegral = NS['Prelude'].fromIntegral, Bool = NS['Prelude'].Bool, andOp = NS['Prelude'].andOp, orOp = NS['Prelude'].orOp, not = NS['Prelude'].not, otherwise = NS['Prelude'].otherwise, Maybe = NS['Prelude'].Maybe, maybe = NS['Prelude'].maybe, Either = NS['Prelude'].Either, either = NS['Prelude'].either, Ordering = NS['Prelude'].Ordering, String = NS['Prelude'].String, fst = NS['Prelude'].fst, snd = NS['Prelude'].snd, curry = NS['Prelude'].curry, curry_ = NS['Prelude'].curry_, uncurry = NS['Prelude'].uncurry, Eq = NS['Prelude'].Eq, Ord = NS['Prelude'].Ord, Monad = NS['Prelude'].Monad, Functor = NS['Prelude'].Functor, id = NS['Prelude'].id, const_ = NS['Prelude'].const_, compose = NS['Prelude'].compose, compose1 = NS['Prelude'].compose1, flip = NS['Prelude'].flip, call = NS['Prelude'].call, until = NS['Prelude'].until, asTypeOf = NS['Prelude'].asTypeOf, error = NS['Prelude'].error, map = NS['Prelude'].map, append = NS['Prelude'].append, filter = NS['Prelude'].filter, head = NS['Prelude'].head, last = NS['Prelude'].last, tail = NS['Prelude'].tail, init = NS['Prelude'].init, null_ = NS['Prelude'].null_, length = NS['Prelude'].length, index = NS['Prelude'].index, reverse = NS['Prelude'].reverse, foldl = NS['Prelude'].foldl, foldl1 = NS['Prelude'].foldl1, foldr = NS['Prelude'].foldr, foldr1 = NS['Prelude'].foldr1, and = NS['Prelude'].and, or = NS['Prelude'].or, any = NS['Prelude'].any, all = NS['Prelude'].all, sum = NS['Prelude'].sum, product = NS['Prelude'].product, concat = NS['Prelude'].concat, concatMap = NS['Prelude'].concatMap, maximum = NS['Prelude'].maximum, minimum = NS['Prelude'].minimum, scanl = NS['Prelude'].scanl, scanl1 = NS['Prelude'].scanl1, scanr = NS['Prelude'].scanr, scanr1 = NS['Prelude'].scanr1, replicate = NS['Prelude'].replicate, take = NS['Prelude'].take, drop = NS['Prelude'].drop, splitAt = NS['Prelude'].splitAt, takeWhile = NS['Prelude'].takeWhile, dropWhile = NS['Prelude'].dropWhile, span = NS['Prelude'].span, break_ = NS['Prelude'].break_, elem = NS['Prelude'].elem, notElem = NS['Prelude'].notElem, lookup = NS['Prelude'].lookup, zip = NS['Prelude'].zip, zip3 = NS['Prelude'].zip3, zipWith = NS['Prelude'].zipWith, zipWith3 = NS['Prelude'].zipWith3, unzip = NS['Prelude'].unzip, unzip3 = NS['Prelude'].unzip3, lines = NS['Prelude'].lines, words = NS['Prelude'].words, unlines = NS['Prelude'].unlines, unwords = NS['Prelude'].unwords, Show = NS['Prelude'].Show;;var String = NS['Data_Char'].String, ord = NS['Data_Char'].ord, chr = NS['Data_Char'].chr, isSpace = NS['Data_Char'].isSpace, isUpper = NS['Data_Char'].isUpper, isLower = NS['Data_Char'].isLower, isAlpha = NS['Data_Char'].isAlpha, isAlphaNum = NS['Data_Char'].isAlphaNum, isDigit = NS['Data_Char'].isDigit, isHexDigit = NS['Data_Char'].isHexDigit, isOctDigit = NS['Data_Char'].isOctDigit, toUpper = NS['Data_Char'].toUpper, toLower = NS['Data_Char'].toLower, toTitle = NS['Data_Char'].toTitle, digitToInt = NS['Data_Char'].digitToInt;;var Bool = NS['Haskell'].Bool, isArray = NS['Haskell'].isArray, isDefined = NS['Haskell'].isDefined, slice = NS['Haskell'].slice, imap = NS['Haskell'].imap, ifilter = NS['Haskell'].ifilter, indexOf = NS['Haskell'].indexOf, lastIndexOf = NS['Haskell'].lastIndexOf, isort = NS['Haskell'].isort, range = NS['Haskell'].range, extend = NS['Haskell'].extend, namespace = NS['Haskell'].namespace, typeOf = NS['Haskell'].typeOf, strictEq = NS['Haskell'].strictEq, strictNe = NS['Haskell'].strictNe, unsafeAdd = NS['Haskell'].unsafeAdd, unsafeSub = NS['Haskell'].unsafeSub, unsafeMul = NS['Haskell'].unsafeMul, unsafeDiv = NS['Haskell'].unsafeDiv, lt = NS['Haskell'].lt, le = NS['Haskell'].le, gt = NS['Haskell'].gt, ge = NS['Haskell'].ge, negate = NS['Haskell'].negate, evalThunks = NS['Haskell'].evalThunks, toArray = NS['Haskell'].toArray, curry = NS['Haskell'].curry, error = NS['Haskell'].error, eta = NS['Haskell'].eta, data = NS['Haskell'].data, ADT = NS['Haskell'].ADT, record = NS['Haskell'].record, accessor = NS['Haskell'].accessor, accessors = NS['Haskell'].accessors, showConstrOf = NS['Haskell'].showConstrOf, typeclass = NS['Haskell'].typeclass, VARARG = NS['Haskell'].VARARG, instance = NS['Haskell'].instance, getInstance = NS['Haskell'].getInstance, asTypeOf = NS['Haskell'].asTypeOf, operators = NS['Haskell'].operators, infix = NS['Haskell'].infix, infixl = NS['Haskell'].infixl, infixr = NS['Haskell'].infixr, op = NS['Haskell'].op, no = NS['Haskell'].no, resolve = NS['Haskell'].resolve, recurse = NS['Haskell'].recurse, Recurse = NS['Haskell'].Recurse, exl = NS['Haskell'].exl, exs = NS['Haskell'].exs, createDo = NS['Haskell'].createDo, Scope = NS['Haskell'].Scope;
 /// <reference path="../../../../jshaskell/src/Haskell/DataType.js" local />
+/// <reference path="../../../../jsparsec/src/Text/Parsec.js" local />
+
+
+//{- This isn't a lexer in the sense that it provides a JavaScript token-stream.
+// - This module provides character-parsers for various JavaScript tokens.
+// -}
+//module BrownPLT.JavaScript.Lexer(lexeme,identifier,reserved,operator,reservedOp,charLiteral,
+//                        stringLiteral,natural,integer,float,naturalOrFloat,
+//                        decimal,hexadecimal,octal,symbol,whiteSpace,parens,
+//                        braces,brackets,squares,semi,comma,colon,dot,
+//                        identifierStart) where
+//
+//import Prelude hiding (lex)
+//import Text.ParserCombinators.Parsec
+//import qualified Text.ParserCombinators.Parsec.Token as T
+
+//identifierStart = (letter <|> oneOf "$_")
+
+var identifierStart = parserPlus(letter, oneOf("$_"))
+
+//javascriptDef =
+//  T.LanguageDef "/*"
+//                "*/"
+//                "//"
+//                False -- no nested comments
+//                identifierStart
+//                (alphaNum <|> oneOf "$_") -- identifier rest
+//                (oneOf "{}<>()~.,?:|&^=!+-*/%!") -- operator start
+//                (oneOf "=<>|&+") -- operator rest
+//                ["break", "case", "catch", "const", "continue", "debugger", 
+//                 "default", "delete", "do", "else", "enum", "false", "finally",
+//                 "for", "function", "if", "instanceof", "in", "let", "new", 
+//                 "null", "return", "switch", "this", "throw", "true", "try", 
+//                 "typeof", "var", "void", "while", "with"]
+//                ["|=", "^=", "&=", "<<=", ">>=", ">>>=", "+=", "-=", "*=", "/=", 
+//                 "%=", "=", ";", ",", "?", ":", "||", "&&", "|", "^", "&", 
+//                 "===", "==", "=", "!==", "!=", "<<", "<=", "<", ">>>", ">>", 
+//                 ">=", ">", "++", "--", "+", "-", "*", "/", "%", "!", "~", ".", 
+//                 "[", "]", "{", "}", "(", ")","</","instanceof"]
+//                 True -- case-sensitive
+
+
+var javascriptDef = GenLanguageDef.LanguageDef(record,
+               { commentStart    : "/*"
+               , commentEnd      : "*/"
+               , commentLine     : "//"
+               , nestedComments  : false
+               , identStart      : identifierStart
+               , identLetter     : parserPlus(alphaNum, oneOf("$_"))
+               , opStart         : oneOf("{}<>()~.,?:|&^=!+-*/%!")
+               , opLetter        : oneOf("=<>|&+")
+               , reservedOpNames : [
+                 "|=", "^=", "&=", "<<=", ">>=", ">>>=", "+=", "-=", "*=", "/=", 
+                 "%=", "=", ";", ",", "?", ":", "||", "&&", "|", "^", "&", 
+                 "===", "==", "=", "!==", "!=", "<<", "<=", "<", ">>>", ">>", 
+                 ">=", ">", "++", "--", "+", "-", "*", "/", "%", "!", "~", ".", 
+                 "[", "]", "{", "}", "(", ")"
+                 ,"instanceof", "in" //TODO: are these needed here?
+                 ]
+               , reservedNames   : [
+                 "break", "case", "catch", "const", "continue", "debugger", 
+                 "default", "delete", "do", "else", "enum", "false", "finally",
+                 "for", "function", "if", "instanceof", "in", "let", "new", 
+                 "null", "return", "switch", "this", "throw", "true", "try", 
+                 "typeof", "var", "void", "while", "with"
+                 ]
+               , caseSensitive   : true
+               });
+
+          
+//lex = T.makeTokenParser javascriptDef
+
+var lex = makeTokenParser(javascriptDef);
+
+//-- everything but commaSep and semiSep
+//identifier = T.identifier  lex
+//reserved = T.reserved  lex
+//operator = T.operator  lex
+//reservedOp = T.reservedOp lex 
+//charLiteral = T.charLiteral lex   
+//stringLiteral = T.stringLiteral lex   
+//natural = T.natural lex   
+//integer = T.integer lex   
+//float = T.float lex   
+//naturalOrFloat = T.naturalOrFloat lex 
+//decimal = T.decimal lex   
+//hexadecimal = T.hexadecimal lex   
+//octal = T.octal lex   
+//symbol = T.symbol lex 
+//whiteSpace = T.whiteSpace lex 
+//parens = T.parens  lex
+//braces = T.braces  lex
+//squares = T.squares lex   
+//semi = T.semi  lex
+//comma = T.comma    lex
+//colon = T.colon lex   
+//dot = T.dot lex
+//brackets = T.brackets lex
+//lexeme = T.lexeme lex
+
+namespace("BrownPLT_JavaScript_Lexer", {
+    lex: lex
+})/// <reference path="../../../../jshaskell/src/Haskell/DataType.js" local />
 /// <reference path="../../../../base/src/Prelude.js" local />
+/// <reference path="../../../../jsparsec/src/Text/Parsec.js" />
 
 
 //-- |JavaScript's syntax.
@@ -10651,109 +12568,6 @@ namespace("BrownPLT_JavaScript_Syntax", {
     ,unId           : unId
     ,UnaryAssignOp  : UnaryAssignOp
     ,LValue         : LValue
-})/// <reference path="../../../../jshaskell/src/Haskell/DataType.js" local />
-/// <reference path="../../../../jsparsec/src/Text/Parsec.js" local />
-
-
-//{- This isn't a lexer in the sense that it provides a JavaScript token-stream.
-// - This module provides character-parsers for various JavaScript tokens.
-// -}
-//module BrownPLT.JavaScript.Lexer(lexeme,identifier,reserved,operator,reservedOp,charLiteral,
-//                        stringLiteral,natural,integer,float,naturalOrFloat,
-//                        decimal,hexadecimal,octal,symbol,whiteSpace,parens,
-//                        braces,brackets,squares,semi,comma,colon,dot,
-//                        identifierStart) where
-//
-//import Prelude hiding (lex)
-//import Text.ParserCombinators.Parsec
-//import qualified Text.ParserCombinators.Parsec.Token as T
-
-//identifierStart = (letter <|> oneOf "$_")
-
-var identifierStart = parserPlus(letter, oneOf("$_"))
-
-//javascriptDef =
-//  T.LanguageDef "/*"
-//                "*/"
-//                "//"
-//                False -- no nested comments
-//                identifierStart
-//                (alphaNum <|> oneOf "$_") -- identifier rest
-//                (oneOf "{}<>()~.,?:|&^=!+-*/%!") -- operator start
-//                (oneOf "=<>|&+") -- operator rest
-//                ["break", "case", "catch", "const", "continue", "debugger", 
-//                 "default", "delete", "do", "else", "enum", "false", "finally",
-//                 "for", "function", "if", "instanceof", "in", "let", "new", 
-//                 "null", "return", "switch", "this", "throw", "true", "try", 
-//                 "typeof", "var", "void", "while", "with"]
-//                ["|=", "^=", "&=", "<<=", ">>=", ">>>=", "+=", "-=", "*=", "/=", 
-//                 "%=", "=", ";", ",", "?", ":", "||", "&&", "|", "^", "&", 
-//                 "===", "==", "=", "!==", "!=", "<<", "<=", "<", ">>>", ">>", 
-//                 ">=", ">", "++", "--", "+", "-", "*", "/", "%", "!", "~", ".", 
-//                 "[", "]", "{", "}", "(", ")","</","instanceof"]
-//                 True -- case-sensitive
-
-
-var javascriptDef = GenLanguageDef.LanguageDef(record,
-               { commentStart    : "/*"
-               , commentEnd      : "*/"
-               , commentLine     : "//"
-               , nestedComments  : false
-               , identStart      : identifierStart
-               , identLetter     : parserPlus(alphaNum, oneOf("$_"))
-               , opStart         : oneOf("{}<>()~.,?:|&^=!+-*/%!")
-               , opLetter        : oneOf("=<>|&+")
-               , reservedOpNames : [
-                 "|=", "^=", "&=", "<<=", ">>=", ">>>=", "+=", "-=", "*=", "/=", 
-                 "%=", "=", ";", ",", "?", ":", "||", "&&", "|", "^", "&", 
-                 "===", "==", "=", "!==", "!=", "<<", "<=", "<", ">>>", ">>", 
-                 ">=", ">", "++", "--", "+", "-", "*", "/", "%", "!", "~", ".", 
-                 "[", "]", "{", "}", "(", ")"
-                 ,"instanceof", "in" //TODO: are these needed here?
-                 ]
-               , reservedNames   : [
-                 "break", "case", "catch", "const", "continue", "debugger", 
-                 "default", "delete", "do", "else", "enum", "false", "finally",
-                 "for", "function", "if", "instanceof", "in", "let", "new", 
-                 "null", "return", "switch", "this", "throw", "true", "try", 
-                 "typeof", "var", "void", "while", "with"
-                 ]
-               , caseSensitive   : true
-               });
-
-          
-//lex = T.makeTokenParser javascriptDef
-
-var lex = makeTokenParser(javascriptDef);
-
-//-- everything but commaSep and semiSep
-//identifier = T.identifier  lex
-//reserved = T.reserved  lex
-//operator = T.operator  lex
-//reservedOp = T.reservedOp lex 
-//charLiteral = T.charLiteral lex   
-//stringLiteral = T.stringLiteral lex   
-//natural = T.natural lex   
-//integer = T.integer lex   
-//float = T.float lex   
-//naturalOrFloat = T.naturalOrFloat lex 
-//decimal = T.decimal lex   
-//hexadecimal = T.hexadecimal lex   
-//octal = T.octal lex   
-//symbol = T.symbol lex 
-//whiteSpace = T.whiteSpace lex 
-//parens = T.parens  lex
-//braces = T.braces  lex
-//squares = T.squares lex   
-//semi = T.semi  lex
-//comma = T.comma    lex
-//colon = T.colon lex   
-//dot = T.dot lex
-//brackets = T.brackets lex
-//lexeme = T.lexeme lex
-
-namespace("BrownPLT_JavaScript_Lexer", {
-    lex: lex
 })/// <reference path="../../../../jshaskell/src/Haskell.js" local />
 /// <reference path="../../../../base/src/Prelude.js" local />
 /// <reference path="../../../../base/src/Data/Char.js" local />
@@ -12266,18 +14080,489 @@ namespace("BrownPLT_JavaScript_Parser", {
     //,StatementParser        : StatementParser
     //,ExpressionParser       : ExpressionParser
     ,assignExpr             : assignExpr
+})/// <reference path="../../../../pretty/src/Text/PrettyPrint/HughesPJ.js" />
+/// <reference path="../../../../jshaskell/src/Haskell.js" local />
+/// <reference path="../../../../base/src/Prelude.js" local />
+/// <reference path="Syntax.js" />
+;(function(){
+//-- |Pretty-printing JavaScript.
+//module BrownPLT.JavaScript.PrettyPrint
+//  ( stmt
+//  , expr
+//  , javaScript
+//  , renderStatements
+//  , renderExpression
+//  ) where
+
+//import Text.PrettyPrint.HughesPJ
+//import BrownPLT.JavaScript.Syntax
+
+//currently Text.PrettyPrint.HughesPJ is not imorted locally
+var P = NS.Text_PrettyPrint_HughesPJ;
+var  Doc            = P.Doc            //-- Abstract
+    ,text           = P.text
+    ,semi           = P.semi  
+    ,comma          = P.comma
+    ,colon          = P.colon
+    ,equals         = P.equals
+    ,lbrace         = P.lbrace
+    ,rbrace         = P.rbrace
+    ,parens         = P.parens
+    ,brackets       = P.brackets
+    ,braces         = P.braces
+    ,quotes         = P.quotes
+    ,doubleQuotes   = P.doubleQuotes
+    ,empty          = P.empty
+    ,hsep           = P.hsep
+    ,vcat           = P.vcat     
+    ,cat            = P.cat
+    ,nest           = P.nest
+    ,punctuate      = P.punctuate
+    ,render         = P.render;
+
+
+
+//renderStatements :: [Statement a] -> String
+//renderStatements ss = render (semiSep ss)
+function renderStatements(ss){
+    return render(semiSep(ss));
+}
+
+//renderExpression :: Expression a -> String
+//renderExpression e = render (expr e)
+function renderExpression(e){
+    return render(expr(e));
+}
+
+//-- Displays the statement in { ... }, unless it already is in a block.
+//inBlock:: (Statement a) -> Doc
+//inBlock s@(BlockStmt _ ss) = stmt s
+//inBlock s                 = lbrace $+$ nest 2 (stmt s) $+$ rbrace
+function inBlock(s){
+    return s.BlockStmt ? stmt(s) : exs(lbrace ,"$+$", nest, 2, stmt(s) ,"$+$", rbrace);
+}
+
+//-- Displays the expression in ( ... ), unless it already is in parens.
+//inParens:: (Expression a) -> Doc
+//inParens e@(ParenExpr _ _) = expr e
+//inParens e                 = parens (expr e)
+function inParens(e){
+    return e.ParenExpr ? expr(e) : parens(expr(e));
+}
+
+//semiSep :: [Statement a] -> Doc
+//semiSep ss = vcat $ map (\s -> stmt s <> semi) ss
+function semiSep(ss){
+    return vcat(map(function(s){ return exs(stmt, s ,"<>", semi) }, ss));
+}
+
+//pp (Id _ str) = text str
+function pp(id){
+    return id.Id ? text(id[1]) : error();
+}
+
+//forInit :: ForInit a -> Doc
+//forInit t = case t of
+//  NoInit     -> empty
+//  VarInit vs -> text "var" <+> (cat $ punctuate comma $ (map varDecl vs))
+//  ExprInit e -> expr e
+function forInit(t){
+    return  t.NoInit   ? empty :
+            t.VarInit  ? exs(text, "var" ,"<+>", [cat ,"$", punctuate, comma ,"$", map(varDecl, t[0])]) :
+            t.ExprInit ? expr(t[0]) :
+            error();
+}
+
+//forInInit :: ForInInit a -> Doc  
+//forInInit t = case t of
+//  ForInVar id   -> text "var" <+> pp id
+//  ForInNoVar id -> pp id
+function ForInNoVar(t){
+    return  t.ForInVar   ? exs(text, "var" ,"<+>", pp(t[0])) :
+            t.ForInNoVar ? pp(t[0]) :
+            error();
+}
+
+//caseClause :: CaseClause a -> Doc
+//caseClause (CaseClause _ e ss) =
+//  text "case" $+$ expr e <+> colon $$ (nest 2 (semiSep ss))
+//caseClause (CaseDefault _ ss) =
+//  text "default:" $$ (nest 2 (semiSep ss))
+function caseClause(a){
+    return  a.CaseClause  ? exs(text, "case" ,"$+$", expr(a[1]) ,"<+>", colon ,"$$", [nest, 2, semiSep(a[2])]) : 
+            a.CaseDefault ? exs(text, "default:" ,"$$", [nest, 2, semiSep(a[1])]) :
+            error();
+}
+
+//catchClause :: CatchClause a -> Doc
+//catchClause (CatchClause _ id s) = text "catch" <+> (parens.pp) id <+> inBlock s
+function catchClause(a){
+    return a.CatchClause ? exs(text, "catch" ,"<+>", parens(pp(a[1])) ,"<+>", inBlock(a[2])) : 
+        error();
+}
+
+//varDecl :: VarDecl a -> Doc
+//varDecl (VarDecl _ id Nothing) = pp id
+//varDecl (VarDecl _ id (Just e)) = pp id <+> equals <+> expr e
+function varDecl(a){
+    return  a[2].Nothing ? pp(a[1]) :
+            a[2].Just    ? exs(pp(a[1]) ,"<+>", equals ,"<+>", expr(a[2][0]) ) :
+            error();
+}
+
+//stmt :: Statement a -> Doc
+//stmt s = case s of
+//  BlockStmt _ ss -> lbrace $+$ (nest 2 (semiSep ss)) $$ rbrace
+//  EmptyStmt _ -> semi
+//  ExprStmt _ e -> expr e
+//  IfSingleStmt _ test cons -> text "if" <+> inParens test $$ stmt cons
+//  IfStmt _ test cons alt ->
+//    text "if" <+> inParens test $$ stmt cons $$ text "else" <+> stmt alt
+//  SwitchStmt _ e cases ->
+//    text "switch" <+> inParens e $$ 
+//    braces (nest 2 (vcat (map caseClause cases)))
+//  WhileStmt _ test body -> text "while" <+> inParens test $$ (stmt body)
+//  ReturnStmt _ Nothing -> text "return"
+//  ReturnStmt _ (Just e) -> text "return" <+> expr e
+//  DoWhileStmt _ s e -> text "do" $$ (stmt s <+> text "while" <+> inParens e)
+//  BreakStmt _ Nothing ->  text "break"
+//  BreakStmt _ (Just label) -> text "break" <+> pp label
+//  ContinueStmt _ Nothing -> text "continue"
+//  ContinueStmt _ (Just label) -> text"continue" <+> pp label
+//  LabelledStmt _ label s -> pp label <> colon $$ stmt s
+//  ForInStmt p init e body -> 
+//    text "for" <+> 
+//    parens (forInInit init <+> text "in" <+> expr e) $+$ stmt body
+//  ForStmt _ init incr test body ->
+//    text "for" <+> 
+//    parens (forInit init <> semi <+> mexpr incr <> semi <+> mexpr test) $$ 
+//    stmt body
+//  TryStmt _ stmt catches finally ->
+//    text "try" $$ inBlock stmt $$ (vcat (map catchClause catches)) $$
+//    ppFinally where 
+//       ppFinally = case finally of
+//        Nothing -> empty
+//        Just stmt -> text "finally" <> inBlock stmt
+//  ThrowStmt _ e -> text "throw" <+> expr e
+//  WithStmt _ expr s ->  text "with" <+> inParens expr $$ stmt s
+//  VarDeclStmt _ decls ->
+//    text "var" <+> (cat $ punctuate comma (map varDecl decls))
+//  FunctionStmt _ name args s ->
+//    text "function" <+> pp name <> 
+//    (parens $ cat $ punctuate comma (map pp args)) $$ 
+//    inBlock s
+function stmt(s){
+    return s.BlockStmt    ? exs(lbrace ,"$+$", nest(2, semiSep(s[1])) ,"$$", rbrace)
+    : s.EmptyStmt    ? semi
+    : s.ExprStmt     ? expr(s[1])
+    : s.IfSingleStmt ? exs(text, "if"     ,"<+>", inParens(s[1]) ,"$$", stmt(s[2]))
+    : s.IfStmt       ? exs(text, "if"     ,"<+>", inParens(s[1]) ,"$$", stmt(s[2]) 
+                                                  ,"$$", text, "else" ,"<+>", stmt(s[3]))
+    : s.SwitchStmt   ? exs(text, "switch" ,"<+>", inParens(s[1]) 
+                                                  ,"$$", braces(nest(2, vcat(map(caseClause, s[2])))))
+    : s.WhileStmt    ? exs(text, "while"  ,"<+>", inParens(s[1]) ,"$$", stmt(s[2]))
+    : s.ReturnStmt   ? s[1].Nothing ? text("return")   : exs(text, "return" ,"<+>", expr(s[1][0]))
+    : s.DoWhileStmt  ? exs(text, "do" ,"$$", [stmt(s[1]) ,"<+>", text, "while" ,"<+>", inParens(s[2])])
+    : s.BreakStmt    ? s[1].Nothing ? text("break")    : exs(text, "break"  ,"<+>", pp(s[1][0]))
+    : s.ContinueStmt ? s[1].Nothing ? text("continue") : exs(text, "continue" ,"<+>", pp(s[1][0]))
+    : s.LabelledStmt ? exs(pp(s[1]) ,"<>", colon ,"$$", stmt(s[2]))
+    : s.ForInStmt    ? exs(text, "for"
+                            ,"<+>", parens, [forInInit(s[1]) ,"<+>", text, "in" ,"<+>", expr(s[2])]
+                            ,"$+$", stmt(s[3]))
+    : s.ForStmt      ? exs(text, "for" ,"<+>", parens, 
+                            [forInit(s[1]) ,"<>", semi ,"<+>", mexpr(s[2]) ,"<>", semi ,"<+>", mexpr(s[3])]
+                            ,"$$", stmt(s[4]))
+    : s.TryStmt      ? exs(text, "try" 
+                            ,"$$", inBlock(s[1])
+                            ,"$$", vcat(map(catchClause, s[2]))
+                            ,"$$", ppFinally.Nothing ? empty : 
+                                        finally_.Just ?
+                                            exs(text, "finally" ,"<>", inBlock(finally_[0])) :
+                                            error())
+    : s.ThrowStmt    ? exs(text, "throw"    ,"<+>", expr(s[1]))
+    : s.WithStmt     ? exs(text, "with"     ,"<+>", inParens(s[1]) ,"$$", stmt(s[2]))
+    : s.VarDeclStmt  ? exs(text, "var"      ,"<+>", cat(punctuate(comma, map(varDecl, s[1]))))
+    : s.FunctionStmt ? exs(text, "function" ,"<+>", pp(s[1])
+                            ,"<>", parens(cat(punctuate(comma, map(pp, s[2]))))
+                            ,"$$", inBlock(s[3]))
+    : error();
+}
+
+//prop :: Prop a -> Doc
+//prop p = case p of
+//  PropId _ id -> pp id
+//  PropString _ str -> doubleQuotes (text (jsEscape str))
+//  PropNum _ n -> text (show n)
+function prop(p){
+    return  p.PropId     ? pp(p[1]) :
+            p.PropString ? doubleQuotes(text(jsEscape(p[1]))) :
+            p.PropNum    ? text(show(p[1])) :
+            error();
+}
+
+//infixOp op = text $ case op of
+//  OpMul -> "*"
+//  OpDiv -> "/"
+//  OpMod -> "%" 
+//  OpAdd -> "+" 
+//  OpSub -> "-"
+//  OpLShift -> "<<"
+//  OpSpRShift -> ">>"
+//  OpZfRShift -> ">>>"
+//  OpLT -> "<"
+//  OpLEq -> "<="
+//  OpGT -> ">"
+//  OpGEq -> ">="
+//  OpIn -> "in"
+//  OpInstanceof -> "instanceof"
+//  OpEq -> "=="
+//  OpNEq -> "!="
+//  OpStrictEq -> "==="
+//  OpStrictNEq -> "!=="
+//  OpBAnd -> "&"
+//  OpBXor -> "^"
+//  OpBOr -> "|"
+//  OpLAnd -> "&&"
+//  OpLOr -> "||"
+var infixOpCtrToStr = {
+     OpMul : "*"
+    ,OpDiv : "/"
+    ,OpMod : "%" 
+    ,OpAdd : "+" 
+    ,OpSub : "-"
+    ,OpLShift : "<<"
+    ,OpSpRShift : ">>"
+    ,OpZfRShift : ">>>"
+    ,OpLT : "<"
+    ,OpLEq : "<="
+    ,OpGT : ">"
+    ,OpGEq : ">="
+    ,OpIn : "in"
+    ,OpInstanceof : "instanceof"
+    ,OpEq : "=="
+    ,OpNEq : "!="
+    ,OpStrictEq : "==="
+    ,OpStrictNEq : "!=="
+    ,OpBAnd : "&"
+    ,OpBXor : "^"
+    ,OpBOr : "|"
+    ,OpLAnd : "&&"
+    ,OpLOr : "||"
+};
+function infixOp(op){
+    return text(infixOpCtrToStr[showConstrOf(op)]);
+}
+
+
+//prefixOp op = text $ case op of
+//  PrefixLNot -> "!"
+//  PrefixBNot -> "~"
+//  PrefixPlus -> "+"
+//  PrefixMinus -> "-"
+//  PrefixTypeof -> "typeof"
+//  PrefixVoid -> "void"
+//  PrefixDelete -> "delete"
+var prefixOpCtrToStr = {
+     PrefixLNot : "!"
+    ,PrefixBNot : "~"
+    ,PrefixPlus : "+"
+    ,PrefixMinus : "-"
+    ,PrefixTypeof : "typeof"
+    ,PrefixVoid : "void"
+    ,PrefixDelete : "delete"
+};
+
+function prefixOp(op){
+    return text(prefixOpCtrToStr[showConstrOf(op)]);
+}
+
+//assignOp op = text $ case op of
+//  OpAssign -> "="
+//  OpAssignAdd -> "+="
+//  OpAssignSub -> "-="
+//  OpAssignMul -> "*="
+//  OpAssignDiv -> "/="
+//  OpAssignMod -> "%="
+//  OpAssignLShift -> "<<="
+//  OpAssignSpRShift -> ">>="
+//  OpAssignZfRShift -> ">>>="
+//  OpAssignBAnd -> "&="
+//  OpAssignBXor -> "^="
+//  OpAssignBOr -> "|="
+var assignOpCtrToStr = {
+     OpAssign : "="
+    ,OpAssignAdd : "+="
+    ,OpAssignSub : "-="
+    ,OpAssignMul : "*="
+    ,OpAssignDiv : "/="
+    ,OpAssignMod : "%="
+    ,OpAssignLShift : "<<="
+    ,OpAssignSpRShift : ">>="
+    ,OpAssignZfRShift : ">>>="
+    ,OpAssignBAnd : "&="
+    ,OpAssignBXor : "^="
+    ,OpAssignBOr : "|="
+};
+function assignOp(op){
+    return text(assignOpCtrToStr[showConstrOf(op)]);
+}
+
+//-- Based on:
+//--   http://developer.mozilla.org/en/docs/Core_JavaScript_1.5_Guide:Literals
+//jsEscape:: String -> String
+//jsEscape "" = ""
+//jsEscape (ch:chs) = (sel ch) ++ jsEscape chs where
+//    sel '\b' = "\\b"
+//    sel '\f' = "\\f"
+//    sel '\n' = "\\n"
+//    sel '\r' = "\\r"
+//    sel '\t' = "\\t"
+//    sel '\v' = "\\v"
+//    sel '\'' = "\\'"
+//    sel '\"' = "\\\""
+//    sel '\\' = "\\\\"
+//    sel x    = [x]
+//    -- We don't have to do anything about \X, \x and \u escape sequences.
+var escapeMap = {
+     //"\\b"  : /\b/g  //this inerts \\b after every character
+     "\\f"  : /\f/g
+    ,"\\n"  : /\n/g
+    ,"\\r"  : /\r/g
+    ,"\\t"  : /\t/g
+    ,"\\v"  : /\v/g
+    ,"\\'"  : /\'/g
+    ,"\\\"" : /\"/g
+    ,"\\\\" : /\\/g
+};
+
+function jsEscape(str){
+	for(var key in escapeMap )
+		str = str.replace(escapeMap[key], key);
+	return str;
+}
+
+//lvalue :: LValue a -> Doc
+//lvalue (LVar _ x) = text x
+//lvalue (LDot _ e x) = expr e <> text "." <> text x
+//lvalue (LBracket _ e1 e2) = expr e1 <> brackets (expr e2)
+function lvalue(lval){
+    return  lval.LVar     ? text(lval[1]) :
+            lval.LDot     ? exs(expr(lval[1]) ,"<>", text(".") ,"<>", text(lval[2])) :
+            lval.LBracket ? exs(expr(lval[1]) ,"<>", brackets, expr(lval[2])) :
+            error();
+}
+
+//expr :: Expression a -> Doc
+//expr e = case e of 
+//  StringLit _ str ->  doubleQuotes (text (jsEscape str))
+//  RegexpLit _ re global ci -> 
+//    text "/" <> text re <> text "/" <> g <> i where
+//      g = if global then text "g" else empty
+//      i = if ci then text "i" else empty
+//  NumLit _ n ->  text (show n)
+//  IntLit _ n ->  text (show n)
+//  BoolLit _ True ->  text "true"
+//  BoolLit _ False ->  text "false"
+//  NullLit _ ->  text "null"
+//  ArrayLit _ es ->  brackets $ cat $ punctuate comma (map expr es)
+//  ObjectLit _ xs ->  
+//    braces (hsep (punctuate comma (map pp' xs))) where
+//      pp' (n,v) =  prop n <> colon <+> expr v
+//  ThisRef _ ->  text "this"
+//  VarRef _ id ->  pp id
+//  DotRef _ e' id -> expr e' <> text "." <> pp id
+//  BracketRef _ container key -> expr container <> brackets (expr key)
+//  NewExpr _ constr args -> 
+//    text "new" <+> expr constr <> 
+//    (parens $ cat $ punctuate comma (map expr args))
+//  PrefixExpr _ op e' -> prefixOp op <+> expr e'
+//  InfixExpr _ op left right -> expr left <+> infixOp op <+> expr right
+//  CondExpr _ test cons alt -> 
+//    expr test <+> text "?" <+> expr cons <+> colon <+> expr alt
+//  AssignExpr _ op l r ->  lvalue l <+> assignOp op <+> expr r
+//  UnaryAssignExpr _ op e' -> case op of
+//    PrefixInc -> text "++" <> lvalue e'
+//    PrefixDec -> text "--" <> lvalue e'
+//    PostfixInc -> lvalue e' <> text "++"
+//    PostfixDec -> lvalue e' <> text "--"
+//  ParenExpr _ e' ->  parens (expr e')
+//  ListExpr _ es ->  cat $ punctuate comma (map expr es)
+//  CallExpr _ f args -> 
+//    expr f <> (parens $ cat $ punctuate comma (map expr args))
+//  FuncExpr _ name args body -> 
+//    text "function" <+> text (maybe "" unId name) <+>
+//    (parens $ cat $ punctuate comma (map pp args)) $$ 
+//    inBlock body
+function expr(e){
+    return e.StringLit  ? doubleQuotes(text(jsEscape(e[1])))
+    : e.RegexpLit  ? exs(text("/") ,"<>", text(e[1]) ,"<>", text("/") ,"<>", e[2] ? text("g") : empty ,"<>", e[3] ? text("i") : empty)
+    : e.NumLit     ? text(Show.show(e[1]))
+    : e.IntLit     ? text(Show.show(e[1]))
+    : e.BoolLit    ? text(e[1] ? "true" : "false")
+    : e.NullLit    ? text("null")
+    : e.ArrayLit   ? brackets(cat(punctuate(comma, map(expr, e[1]))))
+    : e.ObjectLit  ? braces(hsep(punctuate(comma, map(function(t){
+                        return exs(prop(t[0]) ,"<>", colon ,"<+>", expr(t[1]))
+                     }, e[1]))))
+    : e.ThisRef    ? text("this")
+    : e.VarRef     ? pp(e[1])
+    : e.DotRef     ? exs(expr(e[1]) ,"<>", text(".") ,"<>", pp(e[2]))
+    : e.BracketRef ? exs(expr(e[1]) ,"<>", brackets(expr(e[2])))
+    : e.NewExpr    ? exs(text, "new" ,"<+>", expr(e[1]) ,"<>", parens(cat(punctuate(comma, map(expr, e[2])))))
+    : e.PrefixExpr ? exs(prefixOp(e[1]) ,"<+>", expr(e[2]))
+    : e.InfixExpr  ? exs(expr(e[2]) ,"<+>", infixOp(e[1]) ,"<+>", expr(e[3]))
+    : e.CondExpr   ? exs(expr(e[1]) ,"<+>", text("?") ,"<+>", expr(e[2]) ,"<+>", colon ,"<+>", expr(e[3]))
+    : e.AssignExpr ? exs(lvalue(e[2]) ,"<+>", assignOp(e[1]) ,"<+>", expr(e[3]))
+    : e.UnaryAssignExpr ? e[1].PrefixInc  ? exs(text("++") ,"<>", lvalue(e[2]))
+                        : e[1].PrefixDec  ? exs(text("--") ,"<>", lvalue(e[2]))
+                        : e[1].PostfixInc ? exs(lvalue(e[2]) ,"<>", text("++"))
+                        : e[1].PostfixDec ? exs(lvalue(e[2]) ,"<>", text("--")) : error()
+    : e.ParenExpr    ? parens(expr(e[1]))
+    : e.ListExpr     ? cat(punctuate(comma, map(expr, e[1])))
+    : e.CallExpr     ? exs(expr(e[1]) ,"<>", parens(cat(punctuate(comma, map(expr, e[2])))))
+    : e.FuncExpr     ? exs(text, "function" ,"<+>", text, maybe("", unId, e[1]) ,"<+>",
+                     parens(cat(punctuate(comma, map(pp, e[2])))) ,"$$", 
+                     inBlock(e[3]))
+    : error()
+}
+
+//mexpr :: Maybe (Expression a) -> Doc
+//mexpr Nothing = empty
+//mexpr (Just e) = expr e
+function mexpr(m){
+    return  m.Nothing ? empty :
+            m.Just    ? expr(m[0]) :
+            error();
+}
+
+//javaScript :: JavaScript a -> Doc
+//javaScript (Script _ ss) = semiSep ss
+function javaScript(js){
+    return js.Script ? semiSep(js[1]) : error();
+}
+
+namespace("BrownPLT_JavaScript_PrettyPrint", {
+     stmt             : stmt
+    ,expr             : expr
+    ,javaScript       : javaScript
+    ,renderStatements : renderStatements
+    ,renderExpression : renderExpression
 })
+
+}());
 }());;(function(){
+/// <reference path="../../../pretty/src/Text/PrettyPrint/HughesPJ.js" />
 /// <reference path="JavaScript/Lexer.js" />
 /// <reference path="JavaScript/Syntax.js" />
 /// <reference path="JavaScript/Parser.js" />
-/// <reference path="../../../jsparsec/src/Text/Parsec.js" />
+/// <reference path="JavaScript/PrettyPrint.js" />
 
 namespace("BrownPLT_JavaScript")
 importSubmodules("BrownPLT_JavaScript",
     ["Lexer"
     ,"Syntax"
     ,"Parser"
+    ,"PrettyPrint"
     ])
 
 

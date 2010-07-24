@@ -145,7 +145,7 @@ function stackTrace(){
 
 function error(a){
     var fnName = (a instanceof Function) ? (a.name || a._name) : null,
-        msg = fnName || a || "Unspecified error",
+        msg = fnName || a || "Unspecified error from " + arguments.callee.caller.name +" <- "+ arguments.callee.caller.caller.name,
         err = new Error(msg);
     try{
         err.stackTrace = stackTrace();
@@ -265,7 +265,7 @@ function range(lower, upper){
 // * the unrolled loops are not _entirely_ pointless: e.g. a complex parser (like the one in WebBits)
 //   can build up hundreds of thousands of thunks even for a smaller document
 
-function evalThunks(thunk, hundredTimes) {
+function _evalThunks(thunk, hundredTimes) {
 
     if (!hundredTimes || hundredTimes == Infinity) {
         try {
@@ -274,7 +274,10 @@ function evalThunks(thunk, hundredTimes) {
                                  ()()()()()()()()()()()()()()()()()()()()()()()()()
                                  ()()()()()()()()()()()()()()()()()()()()()()()()()
             ));
-        } catch (_) { }
+        } catch (e) {
+            //if(!/thunk/.test(e.message))
+                //throw e;
+        }
         return thunk;
     }
 
@@ -292,6 +295,25 @@ function evalThunks(thunk, hundredTimes) {
     }
     next();
 }
+
+//a bit slower version for debugging:
+function evalThunks(thunk, hundredTimes) {
+
+    if (!hundredTimes || hundredTimes == Infinity) {
+        do thunk = thunk()
+        while(thunk && thunk.call)
+        return thunk;
+    }
+
+    function next() {
+            var i = 100*hundredTimes;
+            do thunk = thunk()
+            while (--i && thunk && thunk.call);
+            setTimeout(next, 1);
+    }
+    next();
+}
+
 
 var Bool = Boolean;
 

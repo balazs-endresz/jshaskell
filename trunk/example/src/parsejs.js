@@ -1,4 +1,5 @@
 /// <reference path="../../jsparsec/src/Text/Parsec/Prim.js" local />
+/// <reference path="../../pretty/src/Text/PrettyPrint/HughesPJ.js" />
 /// <reference path="../../WebBits/src/BrownPLT/JavaScript.js" local />
 
 /*
@@ -36,7 +37,7 @@ Result:
 // in Firebug you can see the whole AST on the console
 
 */
-
+var P = NS.Text_PrettyPrint_HughesPJ;
 var log = typeof console != "undefined" ? console.log : 
           typeof print != "undefined" ? print : 
           function(a){ alert(a) };
@@ -44,8 +45,8 @@ var log = typeof console != "undefined" ? console.log :
 function parseThis(){
     run(parseScript, parseThis.toString(), function(result){
         log(result.state.length ? "failed" : "ok");
-        if(typeof console != "undefined")
-            console.log(result.ast);
+        log(result.ast);
+        //log(P.render(javaScript(result.ast)))
     })
 }
 

@@ -559,94 +559,21 @@ var Above       = Doc.Above;
 //                    = text s <> nest (-length s) y
 //-}
 
-//-- ---------------------------------------------------------------------------
-//-- Simple derived definitions
-
-//semi  = char ';'
-var semi = char_(";");
-
-//colon = char ':'
-var colon = char_(":");
-
-//comma = char ','
-var comma = char_(",");
-
-//space = char ' '
-var space = char_(" ");
-
-//equals = char '='
-var equals = char_("=");
-
-//lparen = char '('
-var lparen = char_("(");
-
-//rparen = char ')'
-var rparen = char_(")");
-
-//lbrack = char '['
-var lbrack = char_("[");
-
-//rbrack = char ']'
-var rbrack = char_("]");
-
-//lbrace = char '{'
-var lbrace = char_("{");
-
-//rbrace = char '}'
-var rbrace = char_("}");
-
-function textShow(n){
-    return text(Show.show(n));
-}
-//TODO
-var int_, integer, float_, double_, rational;
-int_ = integer = float_ = double_ = rational = textShow;
-
-//int      n = text (show n)
-//integer  n = text (show n)
-//float    n = text (show n)
-//double   n = text (show n)
-//rational n = text (show n)
-
-//-- SIGBJORN wrote instead:
-//-- rational n = text (show (fromRationalX n))
-
-function wrap(l, t){
-    return function(p){
-        return besideOp( besideOp( char_(l), p ), char_(t) );
-    }
-}
-
-//quotes p        = char '\'' <> p <> char '\''
-var quotes        = wrap("'", "'");
-
-//doubleQuotes p  = char '"' <> p <> char '"'
-var doubleQuotes  = wrap('"', '"');
-
-//parens p        = char '(' <> p <> char ')'
-var parens        = wrap('(', ')');
-
-//brackets p      = char '[' <> p <> char ']'
-var brackets      = wrap('[', ']');
-
-//braces p        = char '{' <> p <> char '}'
-var braces        = wrap('{', '}');
-
 
 //-- lazy list versions
 //hcat = reduceAB . foldr (beside_' False) empty
 function hcat(docs){
-    return reduceAB( foldr(beside__(false), empty, docs) );
+    return reduceAB( foldr(curry(beside__)(false), empty, docs) );
 }
 
 //hsep = reduceAB . foldr (beside_' True)  empty
 function hsep(docs){
-    return reduceAB( foldr(beside__(true), empty, docs) );
+    return reduceAB( foldr(curry(beside__)(true), empty, docs) );
 }
 
 //vcat = reduceAB . foldr (above_' True) empty
 function vcat(docs){
-    return reduceAB( foldr(above__(true), empty, docs) );
+    return reduceAB( foldr(curry(above__)(true), empty, docs) );
 }
 
 
@@ -808,6 +735,7 @@ function char_(c){
     return textBeside_(Chr(c), 1, Empty);
 }
 
+//TODO
 //text  s = case length s of {sl -> textBeside_ (Str s)  sl Empty}
 function text(s){
     return textBeside_(Str(s), s.length, Empty);
@@ -822,6 +750,81 @@ function ptext(s){
 function zeroWidthText(s){
     return textBeside_(Str(s), 0, Empty);
 }
+
+//-- ---------------------------------------------------------------------------
+//-- Simple derived definitions
+
+//semi  = char ';'
+var semi = char_(";");
+
+//colon = char ':'
+var colon = char_(":");
+
+//comma = char ','
+var comma = char_(",");
+
+//space = char ' '
+var space = char_(" ");
+
+//equals = char '='
+var equals = char_("=");
+
+//lparen = char '('
+var lparen = char_("(");
+
+//rparen = char ')'
+var rparen = char_(")");
+
+//lbrack = char '['
+var lbrack = char_("[");
+
+//rbrack = char ']'
+var rbrack = char_("]");
+
+//lbrace = char '{'
+var lbrace = char_("{");
+
+//rbrace = char '}'
+var rbrace = char_("}");
+
+function textShow(n){
+    return text(Show.show(n));
+}
+//TODO
+var int_, integer, float_, double_, rational;
+int_ = integer = float_ = double_ = rational = textShow;
+
+//int      n = text (show n)
+//integer  n = text (show n)
+//float    n = text (show n)
+//double   n = text (show n)
+//rational n = text (show n)
+
+//-- SIGBJORN wrote instead:
+//-- rational n = text (show (fromRationalX n))
+
+function wrap(l, t){
+    return function(p){
+        return besideOp( besideOp( char_(l), p ), char_(t) );
+    }
+}
+
+//quotes p        = char '\'' <> p <> char '\''
+var quotes        = wrap("'", "'");
+
+//doubleQuotes p  = char '"' <> p <> char '"'
+var doubleQuotes  = wrap('"', '"');
+
+//parens p        = char '(' <> p <> char ')'
+var parens        = wrap('(', ')');
+
+//brackets p      = char '[' <> p <> char ']'
+var brackets      = wrap('[', ']');
+
+//braces p        = char '{' <> p <> char '}'
+var braces        = wrap('{', '}');
+
+
 
 //nest k  p = mkNest k (reduceDoc p)        -- Externally callable version
 function nest(k, p){
@@ -862,7 +865,7 @@ function mkUnion(p, q){
 //above_ p g q = Above p g q
 function above_(p, g, q){
     return  q.Empty ? p :
-            g.Empty ? q :
+            p.Empty ? q :
             Above(p, g, q);
 }
 
@@ -953,7 +956,7 @@ function nilAboveNest(g, k, q){
 //beside_ Empty _ q = q
 //beside_ p g q = Beside p g q
 function beside_(p, g, q){
-    return q.Empty ? p : g.Empty ? q : Beside(p, g, q);
+    return q.Empty ? p : p.Empty ? q : Beside(p, g, q);
 }
 
 //p <>  q = beside_ p False q
@@ -1094,10 +1097,10 @@ function sep1(g, doc, k, ys){
 
 //sepNB g p k ys            = sep1 g p k ys
 function sepNB(g, p, k, ys){
-    return  doc.Nest  ? sepNB(g, doc[1], k, ys) :
-            doc.Empty ? mkUnion(oneLiner(nilBeside(g, reduceDoc(g ? hsep(ys) : hcat(ys))))
-                               ,nilAboveNest(true, k, reduceDoc(vcat(ys)))
-                               )
+    return  p.Nest  ? sepNB(g, p[1], k, ys) :
+            p.Empty ? mkUnion(oneLiner(nilBeside(g, reduceDoc(g ? hsep(ys) : hcat(ys))))
+                             ,nilAboveNest(true, k, reduceDoc(vcat(ys)))
+                             )
             : error();
 }
 
@@ -1176,9 +1179,9 @@ function fill1(g, doc, k, ys){
 //fillNB g Empty k (y:ys)    = fillNBE g k y ys
 //fillNB g p k ys            = fill1 g p k ys
 function fillNB(g, p, k, ys){
-    if(doc.Nest)
-        return fillNB(g, doc[1], k, ys);
-    if(doc.Empty){
+    if(p.Nest)
+        return fillNB(g, p[1], k, ys);
+    if(p.Empty){
         if(!ys.length)
             return Empty;
         var a = uncons(ys);
@@ -1686,7 +1689,7 @@ extend(operators, {
 
 
 namespace("Text_PrettyPrint_HughesPJ", {
-
+TextDetails : TextDetails,
     //-- * The document type
      Doc            : Doc            //-- Abstract
 
