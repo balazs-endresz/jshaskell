@@ -157,7 +157,7 @@ function stackTrace(){
 
 function error(a){
     var fnName = (a instanceof Function) ? (a.name || a._name) : null,
-        msg = fnName || a || "Unspecified error",
+        msg = fnName || a || "Unspecified error from " + arguments.callee.caller.name +" <- "+ arguments.callee.caller.caller.name,
         err = new Error(msg);
     try{
         err.stackTrace = stackTrace();
@@ -277,7 +277,7 @@ function range(lower, upper){
 // * the unrolled loops are not _entirely_ pointless: e.g. a complex parser (like the one in WebBits)
 //   can build up hundreds of thousands of thunks even for a smaller document
 
-function evalThunks(thunk, hundredTimes) {
+function _evalThunks(thunk, hundredTimes) {
 
     if (!hundredTimes || hundredTimes == Infinity) {
         try {
@@ -286,7 +286,10 @@ function evalThunks(thunk, hundredTimes) {
                                  ()()()()()()()()()()()()()()()()()()()()()()()()()
                                  ()()()()()()()()()()()()()()()()()()()()()()()()()
             ));
-        } catch (_) { }
+        } catch (e) {
+            //if(!/thunk/.test(e.message))
+                //throw e;
+        }
         return thunk;
     }
 
@@ -304,6 +307,25 @@ function evalThunks(thunk, hundredTimes) {
     }
     next();
 }
+
+//a bit slower version for debugging:
+function evalThunks(thunk, hundredTimes) {
+
+    if (!hundredTimes || hundredTimes == Infinity) {
+        do thunk = thunk()
+        while(thunk && thunk.call)
+        return thunk;
+    }
+
+    function next() {
+            var i = 100*hundredTimes;
+            do thunk = thunk()
+            while (--i && thunk && thunk.call);
+            setTimeout(next, 1);
+    }
+    next();
+}
+
 
 var Bool = Boolean;
 
@@ -340,6 +362,432 @@ namespace("Haskell_Main", {
 });
 
 /// <reference path="Main.js" />
+
+// -------------------------------------------------
+// Algebraic Data Types
+// -------------------------------------------------
+
+var accessors = {};
+
+function accessor(prop, obj){
+    return obj ? obj[prop] : function(obj){ return obj[prop] }
+}
+
+function Record(){}
+var record = new Record();
+
+function ADT(){}
+
+function adtToString(type){
+    return function(){
+        var acc = [], rec = this._recordset;
+        if(rec && (rec.constructor != Array)){
+            for(var name in rec){
+                var item = (type ? (rec[name].name || rec[name]) : this[name]);
+                if(!type && (item instanceof Function))
+                    item = (item.constructor != Function) ?
+                                        item.constructor.name :
+                                        "Function(" + item.name + ")";
+                acc.push(name + (type ? " :: " : " = ") + item );
+            }
+            var indent = replicate(this._dataConstructor.length + 2, " ").join("");
+            acc = "{" + acc.join("\n" + indent + ",") + "\n" + indent +"}";
+        }else{
+            for(var i = 0; i in this; i++)
+                acc.push(type ? (rec[i].name || rec[i]) : this[i]);
+            acc = acc.join(" ");
+        }
+        return "(" + this._dataConstructor + (acc ? " " : "") + acc + ")";
+    };
+}
+
+ADT.prototype.toString = adtToString();
+
+ADT.prototype.dataConstructorToString = adtToString(true);
+
+//defined later
+ADT.prototype.update = eta(error);
+
+function dataError(checkType, valueType, name, typeName, constr) {
+    error("Type error: expecting " + checkType.name + 
+          " instead of " + valueType.name +
+          " in the argument '" + name + "' of " + typeName + "." + constr);
+}
+
+
+function data(type, constr){
+    var typeName = type.name;
+    if(type._constructors)
+        throw "Type constructor has been already defined: '" + typeName + "'";
+    type._constructors = constr;
+
+    type.prototype = new ADT();
+
+    for(var i = 0, l = constr.length; i < l; ++i){
+        var single = typeof constr[i] != "object",
+            name =  single  ? constr[i] : constr[i][0];
+        if(name in type)
+            throw "The name of the data constructor (" +
+                    typeName + "." + name + ") is invalid!";
+
+        type[name] = single ? mkDataCtr(name)() : mkDataCtr(name, slice(constr[i], 1));
+        if(!single)
+            type[name]._length = constr[i].length - 1; //for currying
+    }
+    
+    function mkDataCtr(constr, fields){
+        var recordDef = fields && typeof fields[0] == "object";
+        var recordSet = recordDef && fields[0];
+
+        if(recordDef){
+            //this is used for simulating the record syntax
+            //but it's not guaranteed to work in every javascript environment
+            //beacause it assumes that the keys of objects are iterated
+            //in the order they were defined,
+            //but that is not part of the ECMAScript standard
+            var i = 0, fieldName, propToIndex = {}, indexToProp = {};
+            for (fieldName in recordSet) {
+                var fstchr = fieldName.charAt(0);
+                if ((fstchr == "_") || (fstchr == fstchr.toUpperCase()))
+                    throw typeName + "." + name + "." + fieldName + 
+                          ": record names can't start with underscore or uppercase letters";
+                if (fieldName in ({ update: 1 }))
+                    throw typeName + "." + name + "." + fieldName + ": record name is invalid";
+                
+                propToIndex[fieldName] = i;
+                indexToProp[i] = fieldName;
+                i++;
+            }
+        }
+
+        function create(_isrecord, rec){
+            var isrecord = (_isrecord instanceof Record),
+                adt = new type(),
+                value, valueType, checkType;
+
+            adt.constructor = type;
+            adt._recordset = (recordDef && fields[0]) || fields;
+            adt._dataConstructor = constr;
+            adt[constr] = true;
+
+            if (isrecord) {
+                for (var name in rec) {
+                    value = rec[name];
+
+                    if (!recordDef)
+                        error("Records are not defined for " + typeName + "." + constr);
+
+                    if (!(name in recordSet))
+                        error("The accessor '" + name + "' is not defined for " + typeName + "." + constr);
+
+                    checkType = recordSet[name];
+
+                    if (typeof checkType != "string") {
+                        valueType = typeOf(value);
+                        if (valueType != checkType)
+                            dataError(checkType, valueType, name, typeName, constr);
+                    }
+
+                    adt[name] = value;
+                    adt[propToIndex[name]] = value;
+
+
+                }
+            } else {
+                var args = arguments;
+                for (var i = 0, l = args.length; i < l; ++i) {
+                    value = args[i];
+
+                    checkType = fields[i];
+
+                    if (typeof checkType != "string") {
+                        valueType = typeOf(value);
+                        if (valueType != checkType)
+                            dataError(checkType, valueType, i, typeName, constr);
+                    }
+
+                    adt[i] = value;
+                    if(recordDef)
+                        adt[indexToProp[i]] = value;
+                }
+            }
+            
+            //TODO: deifne as separate function
+            adt.update = function(newRecords){
+                var obj = {};
+                for(var n in recordSet)
+                    obj[n] = (n in newRecords) ? newRecords[n] : this[n];
+                return create(record, obj);
+            };
+            
+            return adt;
+        }
+        return create;
+    }
+}
+
+
+//showConstrOf :: a -> String
+//showConstrOf = Data.Data.showConstr . Data.Data.toConstr
+function showConstrOf(dataType){
+    return dataType._dataConstructor;
+}
+
+//#region comment
+
+//currently type variables on the lhs cannot be declared, and they are not checked at all:
+
+//  function Maybe(){}
+//  data(Maybe, [["Just", "a"], "Nothing"]);
+
+//  var Just    = Maybe.Just;
+//  var Nothing = Maybe.Nothing;
+
+//Just("a") instanceof Maybe
+//Just("a").constructor == Maybe
+//
+//Just("a").Just == true //can be used in place of pattern matching: if(maybeval.Just) ... if(maybeval.Nothing) ...
+//Just("a")[0] == "a"    //access arguments by index
+//
+//Nothing.Nothing == true
+//Nothing == Nothing
+
+
+// using record syntax:
+ 
+/*
+function Type(){}
+
+data(Type, [["Constr1", Number, "a"]
+            ,"Constr2"
+            ,["Constr3", {acc: Number}]
+            ,["Constr4", Number]
+            ]);
+
+//in Haskell:
+data Number = ... -- javascript number type
+data Type a = Constr1 Number a
+            | Constr2
+            | Constr3 {acc :: Number}
+            | Constr4 Number
+*/
+
+//Type.Constr3(record, {acc:1}).Constr3 == true
+//Type.Constr3(record, {acc:1}).acc == 1
+//Type.Constr3(record, {acc:1})[0] == 1
+//Type.Constr3(1)[0] == 1
+//Type.Constr3(1).a == 1
+//Type.Constr2.Constr2 == true
+//Type.Constr2 == Type.Constr2
+
+
+//record update (creates a new object):
+
+//function T(){}
+//data(T, [["C", {a: String,b: String}]]);
+//T.C("2","3").update({a:"4"}).a == "4"
+
+//#endregion
+
+namespace("Haskell_DataType", {
+    data      : data,
+    ADT       : ADT,
+    record    : record,
+    accessor  : accessor,
+    accessors : accessors,
+    showConstrOf : showConstrOf
+});/// <reference path="Main.js" />
+
+// -------------------------------------------------
+// Type classes
+// -------------------------------------------------
+
+//this is used for mapping a type to an object,
+//which contains the instance functions
+function Map() {
+    this.keys = [];
+    this.values = [];
+}
+Map.prototype.put = function (key, val) {
+    this.keys.push(key);
+    this.values.push(val);
+}
+Map.prototype.get = function (key) {
+    var i = indexOf(key, this.keys);
+    if (i == -1) return;
+    return this.values[i];
+}
+
+//if this is used in a type signature then from then on the types are not checked
+var VARARG = {};
+
+//TODO: define aliases for operators
+//TODO: handle non-function types (e.g. Bounded)
+function typeclass(name, tvar) {
+
+    var tcls = {};
+
+    tcls._context = [];
+    //tcls._fnTypes = {};
+    tcls._name = name;
+    tcls._dict = new Map();
+
+    tcls.context = function () {
+        this._context = slice(arguments);
+        delete tcls.context;
+        return this;
+    };
+
+    tcls.types = function (obj) {
+        this._fnTypes = obj;
+        delete tcls.types;
+        return this;
+    };
+    
+    tcls.impl = function (obj) {
+        this._default = obj;
+
+        for (var name in tcls._fnTypes) (function (name, type) {
+
+            //constants can be accessed only from the instances
+            //see: asTypeOf, getInstance, typeOf
+            //but defaults are allowed
+            if ((type !== undef) && (type.constructor != Array)) {
+                tcls[name] = ((typeof obj == "function") ? obj() : obj)[name];
+                return;
+            } else 
+            tcls[name] = function () {
+                var args = arguments;
+                var tctr;
+
+                if((type === undef) || (type === VARARG))
+                    error("There's no type signature for " + tcls._name + "." + name +
+                          ", it can be accessed only by: getInstance(" + 
+                          tcls._name + ", SomeType" + ")." + name);
+                
+                var matched;
+                //TODO: optimize
+                var matches = ifilter(function(arg, i) {
+                    var t = type[i];
+                    if(matched || (t == VARARG))
+                        return (matched = true);
+
+                    var ctr = typeOf(arg);
+                    
+                    if (t == tvar) {
+                        tctr = tctr || ctr;
+                        return tctr == ctr;
+                    }
+                    else
+                        return ctr == t;
+                }, args);
+
+                if (!matched && (matches.length != type.length - 1))
+                    error("Type error in " + tcls._name + "." + name);
+                
+
+                var inst = tcls._dict.get(tctr); //TODO: tcls[tctr.name || tctr._name] || 
+                if (!inst)
+                    error("No " + tcls._name + " instance for " + (tctr.name || tctr._name));
+                return inst[name].apply(null, args);
+            };
+        } (name, tcls._fnTypes[name]));
+
+        delete tcls.impl;
+        return this;
+    };
+
+    return tcls;
+}
+
+function instance(tcls, tctr, defs) {
+    //check if superclasses are defined
+    imap(function (cls) {
+        if (!cls._dict.get(tctr))
+            throw "No " + (cls._name || "") + " instance for " + (tctr.name || tctr._name);
+    }, tcls._context);
+    //create instance
+    var inst = {};
+    //create reference to the type constructor
+    inst._type = tctr;
+    //store the instance on the type class in a map :: Map Type (Instance Type)
+    tcls._dict.put(tctr, inst);
+    //create definitions by optionally passing the instance,
+    //so that methods can refernce each other directly
+    defs = (typeof defs == "function") ? defs(inst) : (defs || {});
+    //copy instance methods or defaults to the instance object 
+    var defaults = tcls._default;
+    defaults = (typeof defaults == "function") ? defaults(inst) : defaults;
+    for(var name in tcls._fnTypes)
+        inst[name] = defs[name] || defaults[name];
+    return inst;
+}
+
+
+//Ord.compare(1,2) -> Ordering.LT
+
+function getInstance(tcls, tctr) {
+    return tcls._dict.get(tctr);
+}
+//var OrdNum = getInstance(Ord, Number)
+//OrdNum.compare(1,2) -> Ordering.LT
+
+function asTypeOf(tcls, method, value) {
+    return tcls._dict.get(typeOf(value))[method];
+    //return getInstance(tcls, typeOf(value))[method];
+}
+
+//#region comment
+/*
+//in contrast with Haskell `asTypeOf` takes a type class, and a method name
+//instead of a function as a first argument
+//it's essential for getting a constant value (not a function) from a type class
+//e.g. since Bounded.maxBound is not a function, but it has different values for each type, 
+//Bounded.maxBound is undefined, maxBound exists only on each instance
+//there are two ways of getting the right value, both are identical:
+
+function getLastIndex1(a){
+    var iBounded = getInstance(Bounded, typeOf(a));
+    return Enum.fromEnum( iBounded.maxBound )    
+}
+
+function getLastIndex2(a){
+    return Enum.fromEnum( asTypeOf(Bounded, "maxBound", a) )
+}
+
+//the same as the second one:
+var getLastIndex3 = compose1(Enum.fromEnum, curry(asTypeOf)(Bounded, "maxBound"))
+
+
+
+//if more functions are used from the same type class (inside a loop for example)
+//then getting the instance explicitly is more efficient, but not necessary:
+function getRangeLength(a){
+    var type     = typeOf(a),
+        iBounded = getInstance(Bounded, type),
+        iEnum    = getInstance(Enum   , type);
+        
+    return iEnum.fromEnum(iBounded.maxBound) - iEnum.fromEnum(iBounded.minBound)
+}
+
+//there's no expicit Enum instance here, so it will be resolved twice:
+function getRangeLength_slower(a){
+    var type     = typeOf(a),
+        iBounded = getInstance(Bounded, type);
+
+    return Enum.fromEnum(iBounded.maxBound) - Enum.fromEnum(iBounded.minBound)
+}
+
+*/
+//#endregion
+
+namespace("Haskell_TypeClass", {
+     typeclass   : typeclass
+    ,VARARG      : VARARG
+    ,instance    : instance
+    ,getInstance : getInstance
+    ,asTypeOf    : asTypeOf
+})/// <reference path="Main.js" />
 
 // -------------------------------------------------
 // Operators
@@ -620,425 +1068,7 @@ function createDo(inst){
 namespace("Haskell_Do", {
     createDo: createDo,
     Scope   : Scope
-})/// <reference path="Main.js" />
-
-// -------------------------------------------------
-// Type classes
-// -------------------------------------------------
-
-//this is used for mapping a type to an object,
-//which contains the instance functions
-function Map() {
-    this.keys = [];
-    this.values = [];
-}
-Map.prototype.put = function (key, val) {
-    this.keys.push(key);
-    this.values.push(val);
-}
-Map.prototype.get = function (key) {
-    var i = indexOf(key, this.keys);
-    if (i == -1) return;
-    return this.values[i];
-}
-
-//if this is used in a type signature then from then on the types are not checked
-var VARARG = {};
-
-//TODO: define aliases for operators
-//TODO: handle non-function types (e.g. Bounded)
-function typeclass(name, tvar) {
-
-    var tcls = {};
-
-    tcls._context = [];
-    //tcls._fnTypes = {};
-    tcls._name = name;
-    tcls._dict = new Map();
-
-    tcls.context = function () {
-        this._context = slice(arguments);
-        delete tcls.context;
-        return this;
-    };
-
-    tcls.types = function (obj) {
-        this._fnTypes = obj;
-        delete tcls.types;
-        return this;
-    };
-    
-    tcls.impl = function (obj) {
-        this._default = obj;
-
-        for (var name in tcls._fnTypes) (function (name, type) {
-
-            //constants can be accessed only from the instances
-            //see: asTypeOf, getInstance, typeOf
-            //but defaults are allowed
-            if ((type !== undef) && (type.constructor != Array)) {
-                tcls[name] = ((typeof obj == "function") ? obj() : obj)[name];
-                return;
-            } else 
-            tcls[name] = function () {
-                var args = arguments;
-                var tctr;
-
-                if((type === undef) || (type === VARARG))
-                    error("There's no type signature for " + tcls._name + "." + name +
-                          ", it can be accessed only by: getInstance(" + 
-                          tcls._name + ", SomeType" + ")." + name);
-                
-                var matched;
-                //TODO: optimize
-                var matches = ifilter(function(arg, i) {
-                    var t = type[i];
-                    if(matched || (t == VARARG))
-                        return (matched = true);
-
-                    var ctr = typeOf(arg);
-                    
-                    if (t == tvar) {
-                        tctr = tctr || ctr;
-                        return tctr == ctr;
-                    }
-                    else
-                        return ctr == t;
-                }, args);
-
-                if (!matched && (matches.length != type.length - 1))
-                    error("Type error in " + tcls._name + "." + name);
-                
-
-                var inst = tcls._dict.get(tctr); //TODO: tcls[tctr.name || tctr._name] || 
-                if (!inst)
-                    error("No " + tcls._name + " instance for " + (tctr.name || tctr._name));
-                return inst[name].apply(null, args);
-            };
-        } (name, tcls._fnTypes[name]));
-
-        delete tcls.impl;
-        return this;
-    };
-
-    return tcls;
-}
-
-function instance(tcls, tctr, defs) {
-    //check if superclasses are defined
-    imap(function (cls) {
-        if (!cls._dict.get(tctr))
-            throw "No " + (cls._name || "") + " instance for " + (tctr.name || tctr._name);
-    }, tcls._context);
-    //create instance
-    var inst = {};
-    //create reference to the type constructor
-    inst._type = tctr;
-    //store the instance on the type class in a map :: Map Type (Instance Type)
-    tcls._dict.put(tctr, inst);
-    //create definitions by optionally passing the instance,
-    //so that methods can refernce each other directly
-    defs = (typeof defs == "function") ? defs(inst) : (defs || {});
-    //copy instance methods or defaults to the instance object 
-    var defaults = tcls._default;
-    defaults = (typeof defaults == "function") ? defaults(inst) : defaults;
-    for(var name in tcls._fnTypes)
-        inst[name] = defs[name] || defaults[name];
-    return inst;
-}
-
-
-//Ord.compare(1,2) -> Ordering.LT
-
-function getInstance(tcls, tctr) {
-    return tcls._dict.get(tctr);
-}
-//var OrdNum = getInstance(Ord, Number)
-//OrdNum.compare(1,2) -> Ordering.LT
-
-function asTypeOf(tcls, method, value) {
-    return tcls._dict.get(typeOf(value))[method];
-    //return getInstance(tcls, typeOf(value))[method];
-}
-
-//#region comment
-/*
-//in contrast with Haskell `asTypeOf` takes a type class, and a method name
-//instead of a function as a first argument
-//it's essential for getting a constant value (not a function) from a type class
-//e.g. since Bounded.maxBound is not a function, but it has different values for each type, 
-//Bounded.maxBound is undefined, maxBound exists only on each instance
-//there are two ways of getting the right value, both are identical:
-
-function getLastIndex1(a){
-    var iBounded = getInstance(Bounded, typeOf(a));
-    return Enum.fromEnum( iBounded.maxBound )    
-}
-
-function getLastIndex2(a){
-    return Enum.fromEnum( asTypeOf(Bounded, "maxBound", a) )
-}
-
-//the same as the second one:
-var getLastIndex3 = compose1(Enum.fromEnum, curry(asTypeOf)(Bounded, "maxBound"))
-
-
-
-//if more functions are used from the same type class (inside a loop for example)
-//then getting the instance explicitly is more efficient, but not necessary:
-function getRangeLength(a){
-    var type     = typeOf(a),
-        iBounded = getInstance(Bounded, type),
-        iEnum    = getInstance(Enum   , type);
-        
-    return iEnum.fromEnum(iBounded.maxBound) - iEnum.fromEnum(iBounded.minBound)
-}
-
-//there's no expicit Enum instance here, so it will be resolved twice:
-function getRangeLength_slower(a){
-    var type     = typeOf(a),
-        iBounded = getInstance(Bounded, type);
-
-    return Enum.fromEnum(iBounded.maxBound) - Enum.fromEnum(iBounded.minBound)
-}
-
-*/
-//#endregion
-
-namespace("Haskell_TypeClass", {
-     typeclass   : typeclass
-    ,VARARG      : VARARG
-    ,instance    : instance
-    ,getInstance : getInstance
-    ,asTypeOf    : asTypeOf
-})/// <reference path="Main.js" />
-
-// -------------------------------------------------
-// Algebraic Data Types
-// -------------------------------------------------
-
-var accessors = {};
-
-function accessor(prop, obj){
-    return obj ? obj[prop] : function(obj){ return obj[prop] }
-}
-
-function Record(){}
-var record = new Record();
-
-function ADT(){}
-
-function adtToString(type){
-    return function(){
-        var acc = [], rec = this._recordset;
-        if(rec && (rec.constructor != Array)){
-            for(var name in rec){
-                var item = (type ? (rec[name].name || rec[name]) : this[name]);
-                if(!type && (item instanceof Function))
-                    item = (item.constructor != Function) ?
-                                        item.constructor.name :
-                                        "Function(" + item.name + ")";
-                acc.push(name + (type ? " :: " : " = ") + item );
-            }
-            var indent = replicate(this._dataConstructor.length + 2, " ").join("");
-            acc = "{" + acc.join("\n" + indent + ",") + "\n" + indent +"}";
-        }else{
-            for(var i = 0; i in this; i++)
-                acc.push(type ? (rec[i].name || rec[i]) : this[i]);
-            acc = acc.join(" ");
-        }
-        return "(" + this._dataConstructor + (acc ? " " : "") + acc + ")";
-    };
-}
-
-ADT.prototype.toString = adtToString();
-
-ADT.prototype.dataConstructorToString = adtToString(true);
-
-//defined later
-ADT.prototype.update = eta(error);
-
-function dataError(checkType, valueType, name, typeName, constr) {
-    error("Type error: expecting " + checkType.name + 
-          " instead of " + valueType.name +
-          " in the argument '" + name + "' of " + typeName + "." + constr);
-}
-
-
-function data(type, constr){
-    var typeName = type.name;
-    if(type._constructors)
-        throw "Type constructor has been already defined: '" + typeName + "'";
-    type._constructors = constr;
-
-    type.prototype = new ADT();
-
-    for(var i = 0, l = constr.length; i < l; ++i){
-        var single = typeof constr[i] != "object",
-            name =  single  ? constr[i] : constr[i][0];
-        if(name in type)
-            throw "The name of the data constructor (" +
-                    typeName + "." + name + ") is invalid!";
-
-        type[name] = single ? mkDataCtr(name)() : mkDataCtr(name, slice(constr[i], 1));
-        if(!single)
-            type[name]._length = constr[i].length - 1; //for currying
-    }
-    
-    function mkDataCtr(constr, fields){
-        var recordDef = fields && typeof fields[0] == "object";
-        var recordSet = recordDef && fields[0];
-
-        if(recordDef){
-            //this is used for simulating the record syntax
-            //but it's not guaranteed to work in every javascript environment
-            //beacause it assumes that the keys of objects are iterated
-            //in the order they were defined,
-            //but that is not part of the ECMAScript standard
-            var i = 0, fieldName, propToIndex = {}, indexToProp = {};
-            for (fieldName in recordSet) {
-                var fstchr = fieldName.charAt(0);
-                if ((fstchr == "_") || (fstchr == fstchr.toUpperCase()))
-                    throw typeName + "." + name + "." + fieldName + 
-                          ": record names can't start with underscore or uppercase letters";
-                if (fieldName in ({ update: 1 }))
-                    throw typeName + "." + name + "." + fieldName + ": record name is invalid";
-                
-                propToIndex[fieldName] = i;
-                indexToProp[i] = fieldName;
-                i++;
-            }
-        }
-
-        function create(_isrecord, rec){
-            var isrecord = (_isrecord instanceof Record),
-                adt = new type(),
-                value, valueType, checkType;
-
-            adt.constructor = type;
-            adt._recordset = (recordDef && fields[0]) || fields;
-            adt._dataConstructor = constr;
-            adt[constr] = true;
-
-            if (isrecord) {
-                for (var name in rec) {
-                    value = rec[name];
-
-                    if (!recordDef)
-                        error("Records are not defined for " + typeName + "." + constr);
-
-                    if (!(name in recordSet))
-                        error("The accessor '" + name + "' is not defined for " + typeName + "." + constr);
-
-                    checkType = recordSet[name];
-
-                    if (typeof checkType != "string") {
-                        valueType = typeOf(value);
-                        if (valueType != checkType)
-                            dataError(checkType, valueType, name, typeName, constr);
-                    }
-
-                    adt[name] = value;
-                    adt[propToIndex[name]] = value;
-
-
-                }
-            } else {
-                var args = arguments;
-                for (var i = 0, l = args.length; i < l; ++i) {
-                    value = args[i];
-
-                    checkType = fields[i];
-
-                    if (typeof checkType != "string") {
-                        valueType = typeOf(value);
-                        if (valueType != checkType)
-                            dataError(checkType, valueType, i, typeName, constr);
-                    }
-
-                    adt[i] = value;
-                    if(recordDef)
-                        adt[indexToProp[i]] = value;
-                }
-            }
-            
-            //TODO: deifne as separate function
-            adt.update = function(newRecords){
-                var obj = {};
-                for(var n in recordSet)
-                    obj[n] = (n in newRecords) ? newRecords[n] : this[n];
-                return create(record, obj);
-            };
-            
-            return adt;
-        }
-        return create;
-    }
-}
-
-//#region comment
-
-//currently type variables on the lhs cannot be declared, and they are not checked at all:
-
-//  function Maybe(){}
-//  data(Maybe, [["Just", "a"], "Nothing"]);
-
-//  var Just    = Maybe.Just;
-//  var Nothing = Maybe.Nothing;
-
-//Just("a") instanceof Maybe
-//Just("a").constructor == Maybe
-//
-//Just("a").Just == true //can be used in place of pattern matching: if(maybeval.Just) ... if(maybeval.Nothing) ...
-//Just("a")[0] == "a"    //access arguments by index
-//
-//Nothing.Nothing == true
-//Nothing == Nothing
-
-
-// using record syntax:
- 
-/*
-function Type(){}
-
-data(Type, [["Constr1", Number, "a"]
-            ,"Constr2"
-            ,["Constr3", {acc: Number}]
-            ,["Constr4", Number]
-            ]);
-
-//in Haskell:
-data Number = ... -- javascript number type
-data Type a = Constr1 Number a
-            | Constr2
-            | Constr3 {acc :: Number}
-            | Constr4 Number
-*/
-
-//Type.Constr3(record, {acc:1}).Constr3 == true
-//Type.Constr3(record, {acc:1}).acc == 1
-//Type.Constr3(record, {acc:1})[0] == 1
-//Type.Constr3(1)[0] == 1
-//Type.Constr3(1).a == 1
-//Type.Constr2.Constr2 == true
-//Type.Constr2 == Type.Constr2
-
-
-//record update (creates a new object):
-
-//function T(){}
-//data(T, [["C", {a: String,b: String}]]);
-//T.C("2","3").update({a:"4"}).a == "4"
-
-//#endregion
-
-namespace("Haskell_DataType", {
-    data      : data,
-    ADT       : ADT,
-    record    : record,
-    accessor  : accessor,
-    accessors : accessors
-});
+})
 }());;(function(){
 /// <reference path="Haskell/Main.js" />
 /// <reference path="Haskell/DataType.js" />

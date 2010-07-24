@@ -70,7 +70,7 @@ main = do
     licenses    <- getLicenses pkgNames
     writeFile   fileName $ intercalate (nl ++ nl) (reverse licenses) ++ wrap (concat final)
     
-    putStrLn    "\nStarting Closure compiler"
+    putStrLn    "\nRunning Closure compiler"
 
     compile     fileName >>= putStrLn . ("Closure compiler " ++)
     
@@ -120,7 +120,7 @@ simplifyModules mods = mergeModules $ sortModules mods where
 
     mergeTwoModules a b = Module (mPath a) (nub $ mIncludes a ++ mIncludes b) (nub $ mLocals a ++ mLocals b)
 
-    mergeModules mods = concatMap (foldl fold []) $ groupBy (eq `on` mPath) mods where
+    mergeModules mods = concatMap (foldl fold []) $ groupBy (eq `on` mPath) (mods) where
         fold [] x = [x]
         fold acc@(prev:rest) x = mergeTwoModules prev x : rest
 
@@ -189,7 +189,7 @@ getRefs path = do
     inh  <- openFile path ReadMode
     refs <- readRefs inh []
     hClose inh
-    return refs
+    return $ reverse refs
   where
     readRefs :: Handle -> [Ref] -> IO [Ref]
     readRefs inh acc = do

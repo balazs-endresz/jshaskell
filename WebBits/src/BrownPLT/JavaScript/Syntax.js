@@ -1,5 +1,6 @@
 /// <reference path="../../../../jshaskell/src/Haskell/DataType.js" local />
 /// <reference path="../../../../base/src/Prelude.js" local />
+/// <reference path="../../../../jsparsec/src/Text/Parsec.js" />
 
 
 //-- |JavaScript's syntax.

@@ -1,10 +1,10 @@
 ﻿/// <reference path="../../jshaskell/src/Haskell.js" local />
+/// <reference path="GHC/Base.js" local />
+/// <reference path="GHC/Show.js" local />
 /// <reference path="Data/Either.js" local />
 /// <reference path="Data/Tuple.js" local />
 /// <reference path="Data/List.js" local />
 /// <reference path="Data/Maybe.js" local />
-/// <reference path="GHC/Base.js" local />
-/// <reference path="GHC/Show.js" local />
 
 
 
@@ -220,6 +220,7 @@ namespace("Prelude", {
     ,uncons     : uncons
     ,elemIndex      : elemIndex
     ,unsafeCompare  : unsafeCompare
+    ,emptyListOf    : emptyListOf
 
     ,readHex        : readHex
     ,readOct        : readOct
